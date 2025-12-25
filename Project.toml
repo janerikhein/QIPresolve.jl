@@ -1,0 +1,7 @@
+name = "QIPresolve"
+uuid = "33dde124-04a6-4be8-8b9e-2121c91ea20b"
+authors = ["Jan-Erik Hein <janerik.hein@gmail.com>"]
+version = "1.0.0-DEV"
+
+[compat]
+julia = "1.11"
