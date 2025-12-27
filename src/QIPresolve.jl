@@ -1,5 +1,9 @@
 module QIPresolve
 
-# Write your package code here.
+include("core/parity/dense-xor-model.jl")
+
+export XorElim
+
+using .XorElim
 
 end
