@@ -1,7 +1,3 @@
-module GaussJordanGF2
-
-export FirstOnePivot, gauss_jordan_gf2!
-
 """
     PivotRule
 
@@ -86,8 +82,6 @@ function gauss_jordan_gf2!(rows::Vector{BitVector}, pivot_rule::T) where {T<:Piv
     end
 end
 
-
-end # module
 
 
 

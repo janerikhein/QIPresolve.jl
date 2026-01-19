@@ -1,9 +1,12 @@
 module QIPresolve
 
-include("core/parity/dense-xor-model.jl")
+include("core/core.jl")
+include("graph_embedding/graph_embedding.jl")
+include("io/io.jl")
 
-export XorElim
+using .PresolvingCore
+using .GraphEmbedding
+using .PresolvingIO
 
-using .XorElim
 
 end

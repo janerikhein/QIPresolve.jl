@@ -6,12 +6,22 @@ using Graphs
 using SimpleWeightedGraphs
 
 
+"""
+    IPoint
+
+Integer 2D point.
+"""
 struct IPoint
     x::Int
     y::Int
 end
 
 
+"""
+    EmbeddedGraph
+
+Graph with embedded coordinates and derived center/farthest metrics.
+"""
 struct EmbeddedGraph
     graph::SimpleWeightedGraph{Int, Int}
     coords::Vector{IPoint}
@@ -21,9 +31,19 @@ struct EmbeddedGraph
 end
 
 
+"""
+    squared_dist2(p1::IPoint, p2::IPoint) -> Int
+
+Squared Euclidean distance between two integer points.
+"""
 @inline squared_dist2(p1::IPoint, p2::IPoint) = (p1.x - p2.x)^2 + (p1.y - p2.y)^2
 
 
+"""
+    to_embedded(graph::Graph, coords::Vector{IPoint}) -> EmbeddedGraph
+
+Build a weighted graph using squared edge lengths and compute center metadata.
+"""
 function to_embedded(graph::Graph, coords::Vector{IPoint})::EmbeddedGraph
     n = nv(graph)
     length(coords) == n || throw(ArgumentError("coords must have length nv(graph) = $n, got $(length(coords))"))
@@ -60,6 +80,11 @@ function to_embedded(graph::Graph, coords::Vector{IPoint})::EmbeddedGraph
 end
 
 
+"""
+    pw_shortest_paths(graph::SimpleWeightedGraph) -> Matrix{Float64}
+
+All-pairs shortest paths using a density-based heuristic to choose the solver.
+"""
 function pw_shortest_paths(graph::SimpleWeightedGraph)::Matrix{Float64}
     n = nv(graph)
     n == 0 && return Matrix{Float64}(undef, 0, 0)
@@ -87,13 +112,9 @@ end
 
 
 """
-    graph_center(D::AbstractMatrix{<:Integer})
+    graph_center(distances::Matrix{Float64}) -> Int
 
-Given an all-pairs shortest path distance matrix `D` (square, integer,
-with unreachable pairs encoded as `typemax(Int)`):
-
-- `center`         : index of a graph center (ties broken by smallest index)
-- `dists`          : distance vector from `center` to all vertices
+Return the index of a graph center (minimizing maximum distance).
 """
 function graph_center(distances::Matrix{Float64})::Int
     n, m = size(distances)

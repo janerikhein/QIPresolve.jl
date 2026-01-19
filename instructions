@@ -1,0 +1,335 @@
+Goal
+
+Implement a canonical, sparse quadratic expression type for QP/QCQP presolve rewriting
+
+e(x)=c+∑iaixi+∑i≤jqijxixj
+
+Support efficient:
+
+term insertion (with canonicalization i<=j)
+
+cleanup (drop near-zeros)
+
+basic algebra (scale, add)
+
+variable fixing (x_i := v)
+
+affine substitution (x_old := α*x_new + β)
+
+evaluation (for tests)
+
+Keep it solver-independent.
+
+File layout
+
+Create file: src/core/quadexpr.jl
+
+Types & conventions
+Type aliases
+const VarId = Int
+
+Main struct
+struct QuadExpr
+    constant::Float64
+    lin::Dict{VarId, Float64}                    # i -> a_i
+    quad::Dict{Tuple{VarId,VarId}, Float64}      # (i,j) with i<=j -> q_ij
+end
+
+Constructors
+
+QuadExpr() returns zero expression.
+
+QuadExpr(constant::Real) returns constant-only expression.
+
+Canonicalization rule
+
+All quadratic keys stored as (min(i,j), max(i,j)).
+
+Tolerances
+
+Define a default numerical tolerance in seperate file:
+
+const DEFAULT_TOL_ZERO = 1e-12
+
+Required functions (MVP)
+1) Basic utilities
+
+copy(e::QuadExpr)::QuadExpr (deep copy)
+
+isempty(e::QuadExpr; tol=DEFAULT_TOL_ZERO)::Bool
+
+2) Term insertion (mutating)
+
+add_constant!(e::QuadExpr, c::Real)::QuadExpr
+
+add_lin!(e::QuadExpr, i::VarId, a::Real)::QuadExpr
+
+add_quad!(e::QuadExpr, i::VarId, j::VarId, q::Real)::QuadExpr
+
+internally canonicalize (i,j) to (lo,hi)
+
+accumulate with existing coefficient
+
+3) Coefficient queries
+
+lin_coeff(e::QuadExpr, i::VarId)::Float64 (0.0 if absent)
+
+quad_coeff(e::QuadExpr, i::VarId, j::VarId)::Float64 (canonicalize input)
+
+4) Cleanup / normalization
+
+cleanup!(e::QuadExpr; tol=DEFAULT_TOL_ZERO)::QuadExpr
+
+remove entries in lin and quad with abs(coeff) <= tol
+
+if dict becomes empty, keep empty dict (no special handling needed)
+
+5) Algebra
+
+scale!(e::QuadExpr, α::Real)::QuadExpr
+
+multiply constant, all lin, all quad by α
+
+then cleanup!
+
+add!(e::QuadExpr, f::QuadExpr; α::Real=1.0)::QuadExpr
+
+e += α*f
+
+add constants, merge dicts
+
+cleanup!
+
+Optional sugar:
+
+Base.:+(e::QuadExpr, f::QuadExpr)
+
+Base.:-(e::QuadExpr, f::QuadExpr)
+
+Base.:*(α::Real, e::QuadExpr)
+
+6) Evaluation (for testing)
+
+eval_expr(e::QuadExpr, x::AbstractVector{<:Real})::Float64
+
+7) Rewrite primitives
+Fix a variable x_i := v
+
+fix_var(e::QuadExpr, i::VarId, v::Real; tol=DEFAULT_TOL_ZERO)::QuadExpr
+
+returns a new expression
+
+fix_var!(e::QuadExpr, i::VarId, v::Real; tol=DEFAULT_TOL_ZERO)::QuadExpr
+
+mutating version (optional, but useful)
+
+Substitute x_old := α*x_new + β
+
+substitute_affine(e::QuadExpr, old::VarId, α::Real, new::VarId, β::Real; tol=DEFAULT_TOL_ZERO)::QuadExpr
+
+returns new expression (non-mutating)
+
+Optionally provide substitute_affine!(e, ...) later
+
+Core rewrite pseudocode
+A) fix_var rewrite logic
+
+Given x_i = v:
+
+Linear term: a_i x_i -> a_i*v (constant shift)
+
+Quadratic terms:
+
+For each (i,j) with coeff q:
+
+If i==j: q * x_i^2 -> q*v^2 (constant shift)
+
+If i!=j: q * x_i*x_j -> q*v*x_j (becomes linear in other var)
+
+Implementation approach:
+
+Create out = QuadExpr(e.constant, copy(e.lin), copy(e.quad)) OR build from scratch.
+
+Remove i from linear dict; add a_i*v to constant.
+
+Iterate all quadratic terms:
+
+If term includes i, rewrite into constant and/or linear (on the other variable), and delete from quad.
+
+Cleanup.
+
+Important: Iterating and deleting from Dict simultaneously is tricky. Use:
+
+collect affected keys first, then process.
+
+B) substitute_affine rewrite logic
+
+Substitute x_old = α*x_new + β.
+
+Effects:
+
+Linear term a_old*x_old:
+
+contributes a_old*α*x_new to linear of new
+
+contributes a_old*β to constant
+
+Quadratic term q*(x_old*x_j) for j != old:
+
+becomes q*(α*x_new + β)*x_j = q*α*x_new*x_j + q*β*x_j
+
+add quadratic (new,j) with q*α
+
+add linear j with q*β
+
+Square term q*(x_old^2):
+
+becomes q*(α*x_new + β)^2 = q*(α^2*x_new^2 + 2αβ*x_new + β^2)
+
+add quadratic (new,new) with q*α^2
+
+add linear new with q*2αβ
+
+add constant with q*β^2
+
+Implementation approach:
+
+Build out = QuadExpr() and add:
+
+Start by copying all terms that do not involve old
+
+Then add rewritten contributions from linear and quadratic terms involving old
+
+To do that cleanly:
+
+Initialize out.constant = e.constant
+
+For each linear (i,a):
+
+if i != old: add to out.lin
+
+else: add a*β to constant, add a*α to new linear
+
+For each quad ((i,j),q):
+
+if neither is old: keep as-is in out.quad
+
+else if both are old: apply square expansion
+
+else: let k be the other var (not old); apply bilinear expansion
+
+cleanup!(out; tol)
+
+Canonicalization: use add_quad! to store (lo,hi) and accumulate duplicates.
+
+Edge cases to handle explicitly
+
+old == new in substitute_affine
+
+If old == new, substitution becomes x = α*x + β.
+
+Only safe if you intend this; simplest: throw an error or handle as:
+
+if α == 1: just shift constant contributions? (generally messy)
+
+MVP: @assert old != new.
+
+α == 0 substitution
+
+x_old = β is just a fix. Delegate to fix_var.
+
+Numerical tolerance
+
+After transformations, coefficients can cancel; cleanup must remove small terms.
+
+Dict mutation safety
+
+Never delete while iterating directly over Dict. Collect keys first.
+
+Performance
+
+Use local accumulators; avoid excessive allocations in tight loops.
+
+But MVP correctness first.
+
+Acceptance tests (must implement)
+
+Create test/quadexpr_tests.jl.
+
+Test 1: canonicalization
+
+Add (3,1) quad term, verify stored key is (1,3).
+
+Test 2: add/scale/add! algebra
+
+Build random exprs, verify:
+
+eval_expr(scale!(copy(e),α), x) == α*eval_expr(e,x) (within tol)
+
+eval_expr(e+f,x) == eval_expr(e,x)+eval_expr(f,x)
+
+Test 3: fix_var correctness
+
+Property test:
+
+Random expr e, random i, random v, random assignment x.
+
+Let x2 = copy(x) and set x2[i]=v.
+
+Compute:
+
+lhs = eval_expr(e, x2)
+
+e_fix = fix_var(e, i, v)
+
+rhs = eval_expr(e_fix, x) (note: x still has old i value; it should not matter if i fully eliminated)
+
+Assert abs(lhs-rhs) <= 1e-8 for many trials.
+
+Test 4: substitute_affine correctness
+
+Property test:
+
+Random expr e, choose old != new, random α, β.
+
+Random assignment x with x_new defined.
+
+Construct x_old = α*x_new + β in the evaluation vector:
+
+x2 = copy(x); set x2[old] = α*x2[new] + β
+
+Compute:
+
+lhs = eval_expr(e, x2)
+
+e_sub = substitute_affine(e, old, α, new, β)
+
+rhs = eval_expr(e_sub, x) (where x[old] can be arbitrary)
+
+Assert closeness.
+
+Test 5: α==0 delegates to fix
+
+substitute_affine(e, old, 0.0, new, β) equals fix_var(e, old, β) (evaluate equality on random x)
+
+Nice-to-have follow-ups (not MVP)
+
+substitute_affine!(...) in-place variant
+
+occurrence_count(e, i)
+
+involves(e, i)
+
+neighbor iterator quad_neighbors(e, i)
+
+general AffineExprIR replacement (multi-var affine substitution)
+
+Done criteria
+
+All acceptance tests pass
+
+QuadExpr remains canonical after any operation
+
+Substitution/fixing remove old var entirely from expr (no remaining lin/quad references to it)
+
+API stable enough to implement presolve passes on top
