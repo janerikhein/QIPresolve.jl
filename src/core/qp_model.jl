@@ -1,4 +1,4 @@
-module QPModel
+module ModelTypes
 
 const VarId = Int
 
@@ -116,7 +116,6 @@ function affine_var_transform!(model::QPModel, id::VarId, factor::Float64, offse
 end
 
 end # module
-
 
 
 

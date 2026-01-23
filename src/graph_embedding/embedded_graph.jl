@@ -1,9 +1,6 @@
-module GraphCore
-
-export IPoint, EmbeddedGraph, to_embedded
-
 using Graphs
 using SimpleWeightedGraphs
+using JuMP
 
 
 """
@@ -28,6 +25,29 @@ struct EmbeddedGraph
     center::Int
     farthest::Int
     dist_from_center::Vector{Float64}
+end
+
+
+function get_model_params(emb_graph::EmbeddedGraph)
+    graph = emb_graph.graph
+    V = 1:nv(graph)
+    E = Vector{NTuple{2, Int}}(undef, ne(graph))
+    d2 = Dict{NTuple{2, Int}, Int}()
+    sizehint!(d2, ne(graph))
+
+    @inbounds for (i, e) in enumerate(edges(graph))
+        u = src(e)
+        v = dst(e)
+        edge = (u, v)
+        E[i] = edge
+        d2[edge] = w[u, v]
+    end
+
+    R = emb_graph.dist_from_center
+    r = emb_graph.center
+    k = emb_graph.farthest
+
+    return V, E, d2, R, r, k
 end
 
 
@@ -136,4 +156,41 @@ function graph_center(distances::Matrix{Float64})::Int
 end
 
 
-end # module
+"""
+    build_embedding_model(emb_model)
+
+Build a JuMP model for integer graph embedding with squared edge lengths and
+return `(model, x, y)` with integer coordinate variables.
+"""
+function build_embedding_model(emb_graph::EmbeddedGraph)
+    V, E, d2, R, r, k = get_model_params(emb_graph)
+    model = Model()
+
+    # Integer coordinates with box bounds
+    @variable(model, x[i in V], Int, lower_bound = -R[i], upper_bound =  R[i])
+    @variable(model, y[i in V], Int, lower_bound = -R[i], upper_bound =  R[i])
+
+    # objective: minimize 0
+    @objective(model, Min, 0)
+
+    # Edge distance equalities: (xi-xj)^2 + (yi-yj)^2 == d^2({i,j})
+    # Assumes d2[(i,j)] is the squared distance (an integer/float).
+    for (i, j) in E
+        @constraint(model, (x[i] - x[j])^2 + (y[i] - y[j])^2 == d2[(i, j)])
+    end
+
+    # Radius constraint: xi^2 + yi^2 <= dist(r,i)   (here: R[i])
+    for i in V
+        @constraint(model, x[i]^2 + y[i]^2 <= R[i])
+    end
+
+    # Symmetry breaking / anchoring
+    @constraint(model, x[r] == 0)
+    @constraint(model, y[r] == 0)
+
+    @constraint(model, y[k] - x[k] <= 0)
+    @constraint(model, x[k] >= 0)
+    @constraint(model, y[k] >= 0)
+
+    return model, x, y
+end

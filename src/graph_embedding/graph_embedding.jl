@@ -1,4 +1,0 @@
-module GraphEmbedding
-
-
-end # module

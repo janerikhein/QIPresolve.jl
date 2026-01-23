@@ -1,10 +1,6 @@
-module RandomLamanGraphs
-
-export random_laman_graph
-
 using Random
 using Graphs
-using ..GraphCore: IPoint
+using GraphPlot
 
 
 """
@@ -114,8 +110,8 @@ function henneberg_II!(g::Graph, coords::Vector{IPoint}, rng::AbstractRNG, R::In
     ne(g) == 0 && return false
 
     # pick random existing edge
-    edges = collect(edges(g))
-    edge = rand(rng, edges)
+    edge_list = collect(edges(g))
+    edge = rand(rng, edge_list)
     u, v = src(edge), dst(edge)
 
     # choose third attachment x != u,v
@@ -186,5 +182,31 @@ function random_laman_graph(n::Int; R::Int=10, pH2::Float64=0.5, seed::Int=0,
     return g, coords
 end
 
+"""
+    plot_laman_graph(g::Graph, coords::Vector{IPoint}; show_labels=false, show_coords=false, kwargs...)
 
-end # module
+Plot a Laman graph with fixed integer coordinates using GraphPlot.jl.
+Keyword arguments are forwarded to `GraphPlot.gplot`.
+"""
+function plot_laman_graph(g::Graph, coords::Vector{IPoint};
+                          show_labels::Bool=false,
+                          show_coords::Bool=false,
+                          kwargs...)
+    n = nv(g)
+    length(coords) == n || throw(ArgumentError("coords must have length nv(g) = $n, got $(length(coords))"))
+
+    xs = [p.x for p in coords]
+    ys = [p.y for p in coords]
+    labels = show_coords ? [string(p.x, ",", p.y) for p in coords] :
+             (show_labels ? collect(1:n) : nothing)
+    plot_kwargs = merge((; nodesize=0.03, nodelabel=labels), (; kwargs...))
+
+    return GraphPlot.gplot(g, xs, ys; plot_kwargs...)
+end
+
+
+function generate_laman_instance(n::Int; R::Int=10, pH2::Float64=0.5, seed::Int=0)
+    g, coords = random_laman_graph(n; R=R, pH2=pH2, seed=seed)
+    emb_graph = to_embedded(g, coords)
+    return build_embedding_model(emb_graph)
+end
