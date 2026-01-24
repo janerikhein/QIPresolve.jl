@@ -1,9 +1,10 @@
 module QIPresolve
 
-include("core/core.jl")
+include("core/PresolvingCore.jl")
 include("graph_embedding/GraphEmbedding.jl")
-include("io/io.jl")
+include("model_io/ModelIO.jl")
 include("config.jl")
+
 
 import .PresolvingCore
 import .GraphEmbedding

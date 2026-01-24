@@ -4,7 +4,7 @@ export
     # Laman generation
     random_laman_graph,
     plot_laman_graph,
-    random_laman_graph
+    generate_laman_instance
 
 
 include("embedded_graph.jl")

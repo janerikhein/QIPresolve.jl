@@ -1,0 +1,832 @@
+{
+    "name": "MathOptFormat Model",
+    "version": {
+        "major": 1,
+        "minor": 7
+    },
+    "variables": [
+        {
+            "name": "x[1]"
+        },
+        {
+            "name": "x[2]"
+        },
+        {
+            "name": "x[3]"
+        },
+        {
+            "name": "x[4]"
+        },
+        {
+            "name": "x[5]"
+        },
+        {
+            "name": "y[1]"
+        },
+        {
+            "name": "y[2]"
+        },
+        {
+            "name": "y[3]"
+        },
+        {
+            "name": "y[4]"
+        },
+        {
+            "name": "y[5]"
+        }
+    ],
+    "objective": {
+        "sense": "min",
+        "function": {
+            "type": "ScalarAffineFunction",
+            "terms": [],
+            "constant": 0.0
+        }
+    },
+    "constraints": [
+        {
+            "name": "c1",
+            "function": {
+                "type": "ScalarAffineFunction",
+                "terms": [
+                    {
+                        "coefficient": 1.0,
+                        "variable": "x[3]"
+                    }
+                ],
+                "constant": 0.0
+            },
+            "set": {
+                "type": "EqualTo",
+                "value": 0.0
+            }
+        },
+        {
+            "name": "c2",
+            "function": {
+                "type": "ScalarAffineFunction",
+                "terms": [
+                    {
+                        "coefficient": 1.0,
+                        "variable": "y[3]"
+                    }
+                ],
+                "constant": 0.0
+            },
+            "set": {
+                "type": "EqualTo",
+                "value": 0.0
+            }
+        },
+        {
+            "name": "c1_1",
+            "function": {
+                "type": "ScalarAffineFunction",
+                "terms": [
+                    {
+                        "coefficient": 1.0,
+                        "variable": "x[5]"
+                    }
+                ],
+                "constant": 0.0
+            },
+            "set": {
+                "type": "GreaterThan",
+                "lower": 0.0
+            }
+        },
+        {
+            "name": "c2_1",
+            "function": {
+                "type": "ScalarAffineFunction",
+                "terms": [
+                    {
+                        "coefficient": 1.0,
+                        "variable": "y[5]"
+                    }
+                ],
+                "constant": 0.0
+            },
+            "set": {
+                "type": "GreaterThan",
+                "lower": 0.0
+            }
+        },
+        {
+            "name": "c1_2",
+            "function": {
+                "type": "ScalarAffineFunction",
+                "terms": [
+                    {
+                        "coefficient": -1.0,
+                        "variable": "x[5]"
+                    },
+                    {
+                        "coefficient": 1.0,
+                        "variable": "y[5]"
+                    }
+                ],
+                "constant": 0.0
+            },
+            "set": {
+                "type": "LessThan",
+                "upper": 0.0
+            }
+        },
+        {
+            "name": "c1_3",
+            "function": {
+                "type": "ScalarQuadraticFunction",
+                "affine_terms": [],
+                "quadratic_terms": [
+                    {
+                        "coefficient": 2.0,
+                        "variable_1": "x[1]",
+                        "variable_2": "x[1]"
+                    },
+                    {
+                        "coefficient": -2.0,
+                        "variable_1": "x[2]",
+                        "variable_2": "x[1]"
+                    },
+                    {
+                        "coefficient": 2.0,
+                        "variable_1": "x[2]",
+                        "variable_2": "x[2]"
+                    },
+                    {
+                        "coefficient": 2.0,
+                        "variable_1": "y[1]",
+                        "variable_2": "y[1]"
+                    },
+                    {
+                        "coefficient": -2.0,
+                        "variable_1": "y[2]",
+                        "variable_2": "y[1]"
+                    },
+                    {
+                        "coefficient": 2.0,
+                        "variable_1": "y[2]",
+                        "variable_2": "y[2]"
+                    }
+                ],
+                "constant": 0.0
+            },
+            "set": {
+                "type": "EqualTo",
+                "value": 9.0
+            }
+        },
+        {
+            "name": "c2_2",
+            "function": {
+                "type": "ScalarQuadraticFunction",
+                "affine_terms": [],
+                "quadratic_terms": [
+                    {
+                        "coefficient": 2.0,
+                        "variable_1": "x[1]",
+                        "variable_2": "x[1]"
+                    },
+                    {
+                        "coefficient": -2.0,
+                        "variable_1": "x[3]",
+                        "variable_2": "x[1]"
+                    },
+                    {
+                        "coefficient": 2.0,
+                        "variable_1": "x[3]",
+                        "variable_2": "x[3]"
+                    },
+                    {
+                        "coefficient": 2.0,
+                        "variable_1": "y[1]",
+                        "variable_2": "y[1]"
+                    },
+                    {
+                        "coefficient": -2.0,
+                        "variable_1": "y[3]",
+                        "variable_2": "y[1]"
+                    },
+                    {
+                        "coefficient": 2.0,
+                        "variable_1": "y[3]",
+                        "variable_2": "y[3]"
+                    }
+                ],
+                "constant": 0.0
+            },
+            "set": {
+                "type": "EqualTo",
+                "value": 25.0
+            }
+        },
+        {
+            "name": "c3",
+            "function": {
+                "type": "ScalarQuadraticFunction",
+                "affine_terms": [],
+                "quadratic_terms": [
+                    {
+                        "coefficient": 2.0,
+                        "variable_1": "x[2]",
+                        "variable_2": "x[2]"
+                    },
+                    {
+                        "coefficient": -2.0,
+                        "variable_1": "x[4]",
+                        "variable_2": "x[2]"
+                    },
+                    {
+                        "coefficient": 2.0,
+                        "variable_1": "x[4]",
+                        "variable_2": "x[4]"
+                    },
+                    {
+                        "coefficient": 2.0,
+                        "variable_1": "y[2]",
+                        "variable_2": "y[2]"
+                    },
+                    {
+                        "coefficient": -2.0,
+                        "variable_1": "y[4]",
+                        "variable_2": "y[2]"
+                    },
+                    {
+                        "coefficient": 2.0,
+                        "variable_1": "y[4]",
+                        "variable_2": "y[4]"
+                    }
+                ],
+                "constant": 0.0
+            },
+            "set": {
+                "type": "EqualTo",
+                "value": 25.0
+            }
+        },
+        {
+            "name": "c4",
+            "function": {
+                "type": "ScalarQuadraticFunction",
+                "affine_terms": [],
+                "quadratic_terms": [
+                    {
+                        "coefficient": 2.0,
+                        "variable_1": "x[3]",
+                        "variable_2": "x[3]"
+                    },
+                    {
+                        "coefficient": -2.0,
+                        "variable_1": "x[4]",
+                        "variable_2": "x[3]"
+                    },
+                    {
+                        "coefficient": 2.0,
+                        "variable_1": "x[4]",
+                        "variable_2": "x[4]"
+                    },
+                    {
+                        "coefficient": 2.0,
+                        "variable_1": "y[3]",
+                        "variable_2": "y[3]"
+                    },
+                    {
+                        "coefficient": -2.0,
+                        "variable_1": "y[4]",
+                        "variable_2": "y[3]"
+                    },
+                    {
+                        "coefficient": 2.0,
+                        "variable_1": "y[4]",
+                        "variable_2": "y[4]"
+                    }
+                ],
+                "constant": 0.0
+            },
+            "set": {
+                "type": "EqualTo",
+                "value": 65.0
+            }
+        },
+        {
+            "name": "c5",
+            "function": {
+                "type": "ScalarQuadraticFunction",
+                "affine_terms": [],
+                "quadratic_terms": [
+                    {
+                        "coefficient": 2.0,
+                        "variable_1": "x[2]",
+                        "variable_2": "x[2]"
+                    },
+                    {
+                        "coefficient": -2.0,
+                        "variable_1": "x[5]",
+                        "variable_2": "x[2]"
+                    },
+                    {
+                        "coefficient": 2.0,
+                        "variable_1": "x[5]",
+                        "variable_2": "x[5]"
+                    },
+                    {
+                        "coefficient": 2.0,
+                        "variable_1": "y[2]",
+                        "variable_2": "y[2]"
+                    },
+                    {
+                        "coefficient": -2.0,
+                        "variable_1": "y[5]",
+                        "variable_2": "y[2]"
+                    },
+                    {
+                        "coefficient": 2.0,
+                        "variable_1": "y[5]",
+                        "variable_2": "y[5]"
+                    }
+                ],
+                "constant": 0.0
+            },
+            "set": {
+                "type": "EqualTo",
+                "value": 225.0
+            }
+        },
+        {
+            "name": "c6",
+            "function": {
+                "type": "ScalarQuadraticFunction",
+                "affine_terms": [],
+                "quadratic_terms": [
+                    {
+                        "coefficient": 2.0,
+                        "variable_1": "x[3]",
+                        "variable_2": "x[3]"
+                    },
+                    {
+                        "coefficient": -2.0,
+                        "variable_1": "x[5]",
+                        "variable_2": "x[3]"
+                    },
+                    {
+                        "coefficient": 2.0,
+                        "variable_1": "x[5]",
+                        "variable_2": "x[5]"
+                    },
+                    {
+                        "coefficient": 2.0,
+                        "variable_1": "y[3]",
+                        "variable_2": "y[3]"
+                    },
+                    {
+                        "coefficient": -2.0,
+                        "variable_1": "y[5]",
+                        "variable_2": "y[3]"
+                    },
+                    {
+                        "coefficient": 2.0,
+                        "variable_1": "y[5]",
+                        "variable_2": "y[5]"
+                    }
+                ],
+                "constant": 0.0
+            },
+            "set": {
+                "type": "EqualTo",
+                "value": 157.0
+            }
+        },
+        {
+            "name": "c7",
+            "function": {
+                "type": "ScalarQuadraticFunction",
+                "affine_terms": [],
+                "quadratic_terms": [
+                    {
+                        "coefficient": 2.0,
+                        "variable_1": "x[4]",
+                        "variable_2": "x[4]"
+                    },
+                    {
+                        "coefficient": -2.0,
+                        "variable_1": "x[5]",
+                        "variable_2": "x[4]"
+                    },
+                    {
+                        "coefficient": 2.0,
+                        "variable_1": "x[5]",
+                        "variable_2": "x[5]"
+                    },
+                    {
+                        "coefficient": 2.0,
+                        "variable_1": "y[4]",
+                        "variable_2": "y[4]"
+                    },
+                    {
+                        "coefficient": -2.0,
+                        "variable_1": "y[5]",
+                        "variable_2": "y[4]"
+                    },
+                    {
+                        "coefficient": 2.0,
+                        "variable_1": "y[5]",
+                        "variable_2": "y[5]"
+                    }
+                ],
+                "constant": 0.0
+            },
+            "set": {
+                "type": "EqualTo",
+                "value": 394.0
+            }
+        },
+        {
+            "name": "c1_4",
+            "function": {
+                "type": "ScalarQuadraticFunction",
+                "affine_terms": [],
+                "quadratic_terms": [
+                    {
+                        "coefficient": 2.0,
+                        "variable_1": "x[1]",
+                        "variable_2": "x[1]"
+                    },
+                    {
+                        "coefficient": 2.0,
+                        "variable_1": "y[1]",
+                        "variable_2": "y[1]"
+                    }
+                ],
+                "constant": 0.0
+            },
+            "set": {
+                "type": "LessThan",
+                "upper": 25.0
+            }
+        },
+        {
+            "name": "c2_3",
+            "function": {
+                "type": "ScalarQuadraticFunction",
+                "affine_terms": [],
+                "quadratic_terms": [
+                    {
+                        "coefficient": 2.0,
+                        "variable_1": "x[2]",
+                        "variable_2": "x[2]"
+                    },
+                    {
+                        "coefficient": 2.0,
+                        "variable_1": "y[2]",
+                        "variable_2": "y[2]"
+                    }
+                ],
+                "constant": 0.0
+            },
+            "set": {
+                "type": "LessThan",
+                "upper": 64.0
+            }
+        },
+        {
+            "name": "c3_1",
+            "function": {
+                "type": "ScalarQuadraticFunction",
+                "affine_terms": [],
+                "quadratic_terms": [
+                    {
+                        "coefficient": 2.0,
+                        "variable_1": "x[4]",
+                        "variable_2": "x[4]"
+                    },
+                    {
+                        "coefficient": 2.0,
+                        "variable_1": "y[4]",
+                        "variable_2": "y[4]"
+                    }
+                ],
+                "constant": 0.0
+            },
+            "set": {
+                "type": "LessThan",
+                "upper": 65.0
+            }
+        },
+        {
+            "name": "c4_1",
+            "function": {
+                "type": "ScalarQuadraticFunction",
+                "affine_terms": [],
+                "quadratic_terms": [
+                    {
+                        "coefficient": 2.0,
+                        "variable_1": "x[5]",
+                        "variable_2": "x[5]"
+                    },
+                    {
+                        "coefficient": 2.0,
+                        "variable_1": "y[5]",
+                        "variable_2": "y[5]"
+                    }
+                ],
+                "constant": 0.0
+            },
+            "set": {
+                "type": "LessThan",
+                "upper": 157.0
+            }
+        },
+        {
+            "function": {
+                "type": "Variable",
+                "name": "x[1]"
+            },
+            "set": {
+                "type": "GreaterThan",
+                "lower": -5.0
+            }
+        },
+        {
+            "function": {
+                "type": "Variable",
+                "name": "x[2]"
+            },
+            "set": {
+                "type": "GreaterThan",
+                "lower": -8.0
+            }
+        },
+        {
+            "function": {
+                "type": "Variable",
+                "name": "x[3]"
+            },
+            "set": {
+                "type": "GreaterThan",
+                "lower": -0.0
+            }
+        },
+        {
+            "function": {
+                "type": "Variable",
+                "name": "x[4]"
+            },
+            "set": {
+                "type": "GreaterThan",
+                "lower": -8.0
+            }
+        },
+        {
+            "function": {
+                "type": "Variable",
+                "name": "x[5]"
+            },
+            "set": {
+                "type": "GreaterThan",
+                "lower": -12.0
+            }
+        },
+        {
+            "function": {
+                "type": "Variable",
+                "name": "y[1]"
+            },
+            "set": {
+                "type": "GreaterThan",
+                "lower": -5.0
+            }
+        },
+        {
+            "function": {
+                "type": "Variable",
+                "name": "y[2]"
+            },
+            "set": {
+                "type": "GreaterThan",
+                "lower": -8.0
+            }
+        },
+        {
+            "function": {
+                "type": "Variable",
+                "name": "y[3]"
+            },
+            "set": {
+                "type": "GreaterThan",
+                "lower": -0.0
+            }
+        },
+        {
+            "function": {
+                "type": "Variable",
+                "name": "y[4]"
+            },
+            "set": {
+                "type": "GreaterThan",
+                "lower": -8.0
+            }
+        },
+        {
+            "function": {
+                "type": "Variable",
+                "name": "y[5]"
+            },
+            "set": {
+                "type": "GreaterThan",
+                "lower": -12.0
+            }
+        },
+        {
+            "function": {
+                "type": "Variable",
+                "name": "x[1]"
+            },
+            "set": {
+                "type": "LessThan",
+                "upper": 5.0
+            }
+        },
+        {
+            "function": {
+                "type": "Variable",
+                "name": "x[2]"
+            },
+            "set": {
+                "type": "LessThan",
+                "upper": 8.0
+            }
+        },
+        {
+            "function": {
+                "type": "Variable",
+                "name": "x[3]"
+            },
+            "set": {
+                "type": "LessThan",
+                "upper": 0.0
+            }
+        },
+        {
+            "function": {
+                "type": "Variable",
+                "name": "x[4]"
+            },
+            "set": {
+                "type": "LessThan",
+                "upper": 8.0
+            }
+        },
+        {
+            "function": {
+                "type": "Variable",
+                "name": "x[5]"
+            },
+            "set": {
+                "type": "LessThan",
+                "upper": 12.0
+            }
+        },
+        {
+            "function": {
+                "type": "Variable",
+                "name": "y[1]"
+            },
+            "set": {
+                "type": "LessThan",
+                "upper": 5.0
+            }
+        },
+        {
+            "function": {
+                "type": "Variable",
+                "name": "y[2]"
+            },
+            "set": {
+                "type": "LessThan",
+                "upper": 8.0
+            }
+        },
+        {
+            "function": {
+                "type": "Variable",
+                "name": "y[3]"
+            },
+            "set": {
+                "type": "LessThan",
+                "upper": 0.0
+            }
+        },
+        {
+            "function": {
+                "type": "Variable",
+                "name": "y[4]"
+            },
+            "set": {
+                "type": "LessThan",
+                "upper": 8.0
+            }
+        },
+        {
+            "function": {
+                "type": "Variable",
+                "name": "y[5]"
+            },
+            "set": {
+                "type": "LessThan",
+                "upper": 12.0
+            }
+        },
+        {
+            "function": {
+                "type": "Variable",
+                "name": "x[1]"
+            },
+            "set": {
+                "type": "Integer"
+            }
+        },
+        {
+            "function": {
+                "type": "Variable",
+                "name": "x[2]"
+            },
+            "set": {
+                "type": "Integer"
+            }
+        },
+        {
+            "function": {
+                "type": "Variable",
+                "name": "x[3]"
+            },
+            "set": {
+                "type": "Integer"
+            }
+        },
+        {
+            "function": {
+                "type": "Variable",
+                "name": "x[4]"
+            },
+            "set": {
+                "type": "Integer"
+            }
+        },
+        {
+            "function": {
+                "type": "Variable",
+                "name": "x[5]"
+            },
+            "set": {
+                "type": "Integer"
+            }
+        },
+        {
+            "function": {
+                "type": "Variable",
+                "name": "y[1]"
+            },
+            "set": {
+                "type": "Integer"
+            }
+        },
+        {
+            "function": {
+                "type": "Variable",
+                "name": "y[2]"
+            },
+            "set": {
+                "type": "Integer"
+            }
+        },
+        {
+            "function": {
+                "type": "Variable",
+                "name": "y[3]"
+            },
+            "set": {
+                "type": "Integer"
+            }
+        },
+        {
+            "function": {
+                "type": "Variable",
+                "name": "y[4]"
+            },
+            "set": {
+                "type": "Integer"
+            }
+        },
+        {
+            "function": {
+                "type": "Variable",
+                "name": "y[5]"
+            },
+            "set": {
+                "type": "Integer"
+            }
+        }
+    ]
+}

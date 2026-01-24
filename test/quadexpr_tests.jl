@@ -37,10 +37,10 @@ end
 
         e_scaled = copy(e)
         QE.scale!(e_scaled, alpha)
-        @test isapprox(QE.eval_expr(e_scaled, x), alpha * QE.eval_expr(e, x); atol=1e-8)
+        @test isapprox(QE.eval_expr(e_scaled, x), alpha * QE.eval_expr(e, x); atol = 1.0e-8)
 
         e_sum = e + f
-        @test isapprox(QE.eval_expr(e_sum, x), QE.eval_expr(e, x) + QE.eval_expr(f, x); atol=1e-8)
+        @test isapprox(QE.eval_expr(e_sum, x), QE.eval_expr(e, x) + QE.eval_expr(f, x); atol = 1.0e-8)
     end
 end
 
@@ -58,7 +58,7 @@ end
         lhs = QE.eval_expr(e, x2)
         e_fix = QE.fix_var(e, i, v)
         rhs = QE.eval_expr(e_fix, x)
-        @test isapprox(lhs, rhs; atol=1e-8)
+        @test isapprox(lhs, rhs; atol = 1.0e-8)
     end
 end
 
@@ -81,7 +81,7 @@ end
         lhs = QE.eval_expr(e, x2)
         e_sub = QE.substitute_affine(e, old, alpha, new, beta)
         rhs = QE.eval_expr(e_sub, x)
-        @test isapprox(lhs, rhs; atol=1e-8)
+        @test isapprox(lhs, rhs; atol = 1.0e-8)
     end
 end
 
@@ -100,6 +100,6 @@ end
 
         e_sub = QE.substitute_affine(e, old, 0.0, new, beta)
         e_fix = QE.fix_var(e, old, beta)
-        @test isapprox(QE.eval_expr(e_sub, x), QE.eval_expr(e_fix, x); atol=1e-8)
+        @test isapprox(QE.eval_expr(e_sub, x), QE.eval_expr(e_fix, x); atol = 1.0e-8)
     end
 end

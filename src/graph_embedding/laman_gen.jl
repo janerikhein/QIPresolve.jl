@@ -9,7 +9,7 @@ using GraphPlot
 Twice the signed area of triangle (a, b, c).
 """
 @inline function area2(a::IPoint, b::IPoint, c::IPoint)::Int
-    (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x)
+    return (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x)
 end
 
 
@@ -27,7 +27,7 @@ Return true if the three points are collinear.
 Sample a random integer point in the box `[-R, R]^2`.
 """
 @inline function rand_point(rng::AbstractRNG, R::Int)::IPoint
-    IPoint(rand(rng, -R:R), rand(rng, -R:R))
+    return IPoint(rand(rng, -R:R), rand(rng, -R:R))
 end
 
 
@@ -66,6 +66,7 @@ function init_triangle(rng::AbstractRNG, R::Int)
             return g, IPoint[p1, p2, p3]
         end
     end
+    return
 end
 
 
@@ -75,7 +76,7 @@ end
 
 Henneberg I: add a new vertex connected to two existing vertices.
 """
-function henneberg_I!(graph::Graph, coords::Vector{IPoint}, rng::AbstractRNG, R::Int; max_tries::Int=200)::Bool
+function henneberg_I!(graph::Graph, coords::Vector{IPoint}, rng::AbstractRNG, R::Int; max_tries::Int = 200)::Bool
     n = nv(graph)
 
     # sample 2 random nodes
@@ -88,7 +89,7 @@ function henneberg_I!(graph::Graph, coords::Vector{IPoint}, rng::AbstractRNG, R:
     for _ in 1:max_tries
         p = rand_point(rng, R)
         if !point_used(coords, p) && !is_collinear(pa, pb, p)
-            add_vertex!(graph)                 
+            add_vertex!(graph)
             push!(coords, p)
             w = nv(graph)
             add_edge!(graph, w, v1)
@@ -105,7 +106,7 @@ end
 
 Henneberg II: remove an edge and add a new vertex connected to three vertices.
 """
-function henneberg_II!(g::Graph, coords::Vector{IPoint}, rng::AbstractRNG, R::Int; max_tries::Int=300)::Bool
+function henneberg_II!(g::Graph, coords::Vector{IPoint}, rng::AbstractRNG, R::Int; max_tries::Int = 300)::Bool
     n = nv(g)
     ne(g) == 0 && return false
 
@@ -153,8 +154,10 @@ end
 Return `(g::Graph, coords::Vector{IPoint})` where `g` is a Laman graph
 constructed by Henneberg moves and `coords` are integer points in `[-R, R]^2`.
 """
-function random_laman_graph(n::Int; R::Int=10, pH2::Float64=0.5, seed::Int=0,
-                            max_global_tries::Int=10_000, max_tries_H1::Int=200, max_tries_H2::Int=300)
+function random_laman_graph(
+        n::Int; R::Int = 10, pH2::Float64 = 0.5, seed::Int = 0,
+        max_global_tries::Int = 10_000, max_tries_H1::Int = 200, max_tries_H2::Int = 300
+    )
 
     n ≥ 3 || throw(ArgumentError("n must be ≥ 3 (triangle base)"))
     rng = seed == 0 ? Random.default_rng() : MersenneTwister(seed)
@@ -169,8 +172,8 @@ function random_laman_graph(n::Int; R::Int=10, pH2::Float64=0.5, seed::Int=0,
 
         useH2 = (rand(rng) < pH2) && (ne(g) > 0)
         ok = useH2 ?
-            henneberg_II!(g, coords, rng, R; max_tries=max_tries_H2) :
-            henneberg_I!(g, coords, rng, R; max_tries=max_tries_H1)
+            henneberg_II!(g, coords, rng, R; max_tries = max_tries_H2) :
+            henneberg_I!(g, coords, rng, R; max_tries = max_tries_H1)
 
         ok || continue
     end
@@ -188,25 +191,34 @@ end
 Plot a Laman graph with fixed integer coordinates using GraphPlot.jl.
 Keyword arguments are forwarded to `GraphPlot.gplot`.
 """
-function plot_laman_graph(g::Graph, coords::Vector{IPoint};
-                          show_labels::Bool=false,
-                          show_coords::Bool=false,
-                          kwargs...)
+function plot_laman_graph(
+        g::Graph, coords::Vector{IPoint};
+        show_labels::Bool = false,
+        show_coords::Bool = false,
+        kwargs...
+    )
     n = nv(g)
     length(coords) == n || throw(ArgumentError("coords must have length nv(g) = $n, got $(length(coords))"))
 
     xs = [p.x for p in coords]
     ys = [p.y for p in coords]
     labels = show_coords ? [string(p.x, ",", p.y) for p in coords] :
-             (show_labels ? collect(1:n) : nothing)
-    plot_kwargs = merge((; nodesize=0.03, nodelabel=labels), (; kwargs...))
+        (show_labels ? collect(1:n) : nothing)
+    plot_kwargs = merge((; nodesize = 0.03, nodelabel = labels), (; kwargs...))
 
     return GraphPlot.gplot(g, xs, ys; plot_kwargs...)
 end
 
 
-function generate_laman_instance(n::Int; R::Int=10, pH2::Float64=0.5, seed::Int=0)
-    g, coords = random_laman_graph(n; R=R, pH2=pH2, seed=seed)
+function generate_laman_instance(
+        n::Int; R::Int = 10, pH2::Float64 = 0.5, seed::Int = 0,
+        max_global_tries::Int = 10_000, max_tries_H1::Int = 200, max_tries_H2::Int = 300
+    )
+    g, coords = random_laman_graph(
+        n;
+        R = R, pH2 = pH2, seed = seed, max_global_tries = max_global_tries,
+        max_tries_H1 = max_tries_H1, max_tries_H2 = max_tries_H2
+    )
     emb_graph = to_embedded(g, coords)
     return build_embedding_model(emb_graph)
 end

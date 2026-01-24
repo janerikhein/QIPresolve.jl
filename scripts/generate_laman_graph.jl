@@ -27,7 +27,7 @@ end
 
 function usage()
     println("Usage: julia scripts/generate_laman_graph.jl [n] [R] [pH2] [seed] [out]")
-    println("Defaults: n=5 R=10 pH2=0.5 seed=0 out=laman_graph.png")
+    return println("Defaults: n=5 R=10 pH2=0.5 seed=0 out=laman_graph.png")
 end
 
 args = copy(ARGS)
@@ -42,7 +42,7 @@ pH2 = length(args) >= 3 ? parse_float(args[3], "pH2") : 0.5
 seed = length(args) >= 4 ? parse_int(args[4], "seed") : 0
 out = length(args) >= 5 ? args[5] : "laman_graph.png"
 
-g, coords = random_laman_graph(n; R=R, pH2=pH2, seed=seed)
+g, coords = random_laman_graph(n; R = R, pH2 = pH2, seed = seed)
 
 println("n=$(nv(g)) m=$(ne(g)) R=$R pH2=$pH2 seed=$seed")
 println("coords:")
@@ -55,6 +55,6 @@ for e in edges(g)
     println("$(src(e)) $(dst(e))")
 end
 
-plot_ctx = plot_laman_graph(g, coords; show_coords=true)
+plot_ctx = plot_laman_graph(g, coords; show_coords = true)
 draw(PNG(out, 800px, 800px), plot_ctx)
 println("saved plot: $out")

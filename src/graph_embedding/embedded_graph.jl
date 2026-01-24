@@ -32,7 +32,8 @@ function get_model_params(emb_graph::EmbeddedGraph)
     graph = emb_graph.graph
     V = 1:nv(graph)
     E = Vector{NTuple{2, Int}}(undef, ne(graph))
-    d2 = Dict{NTuple{2, Int}, Int}()
+    w = weights(graph)
+    d2 = Dict{NTuple{2, Int}, eltype(w)}()
     sizehint!(d2, ne(graph))
 
     @inbounds for (i, e) in enumerate(edges(graph))
@@ -90,7 +91,7 @@ function to_embedded(graph::Graph, coords::Vector{IPoint})::EmbeddedGraph
     center = graph_center(pw_dist)
 
     # distance vector from center
-    dists = Vector{Int}(undef, n)
+    dists = Vector{Float64}(undef, n)
     @inbounds copyto!(dists, @view pw_dist[center, :])
 
     # farthest node from center
@@ -116,7 +117,7 @@ function pw_shortest_paths(graph::SimpleWeightedGraph)::Matrix{Float64}
     # Heuristic switch:
     # - Floyd–Warshall for small n or fairly dense graphs
     # - Johnson APSP for sparse graphs
-    use_floyd = (n ≤ 400) || (ρ ≥ 0.10)
+    use_floyd = (n ≤ 400) || (ρ ≥ 0.1)
 
     distmx = sqrt.(weights(graph))  # edge weights transformed for weighted shortest paths
     if use_floyd && !(distmx isa Matrix)
@@ -167,8 +168,8 @@ function build_embedding_model(emb_graph::EmbeddedGraph)
     model = Model()
 
     # Integer coordinates with box bounds
-    @variable(model, x[i in V], Int, lower_bound = -R[i], upper_bound =  R[i])
-    @variable(model, y[i in V], Int, lower_bound = -R[i], upper_bound =  R[i])
+    @variable(model, x[i in V], Int, lower_bound = -floor(R[i]), upper_bound = floor(R[i]))
+    @variable(model, y[i in V], Int, lower_bound = -floor(R[i]), upper_bound = floor(R[i]))
 
     # objective: minimize 0
     @objective(model, Min, 0)
@@ -181,7 +182,8 @@ function build_embedding_model(emb_graph::EmbeddedGraph)
 
     # Radius constraint: xi^2 + yi^2 <= dist(r,i)   (here: R[i])
     for i in V
-        @constraint(model, x[i]^2 + y[i]^2 <= R[i])
+        i == r && continue
+        @constraint(model, x[i]^2 + y[i]^2 <= round(R[i]^2))
     end
 
     # Symmetry breaking / anchoring
