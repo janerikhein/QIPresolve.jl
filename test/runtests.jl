@@ -1,7 +1,7 @@
-using QIPresolve
 using Test
 
 @testset "QIPresolve.jl" begin
-    include("xor_elim_tests.jl")
     include("quadexpr_tests.jl")
+    include("constraint_tests.jl")
+    include("model_tests.jl")
 end

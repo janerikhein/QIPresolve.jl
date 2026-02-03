@@ -1,3 +1,0 @@
-module ResidueReductions
-
-end # module
