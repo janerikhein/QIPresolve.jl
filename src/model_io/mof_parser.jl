@@ -11,8 +11,8 @@ const ObjSenseMapping = Dict(
     MOI.FEASIBILITY_SENSE => :feas,
 )
 
-function load_moi_model(file_path::AbstractString; format::Symbol=:mof)   
-    if format == :mof   
+function load_moi_model(file_path::AbstractString; format::Symbol = :mof)
+    if format == :mof
         ff = FF.FORMAT_MOF
     else
         throw(ArgumentError("invalid format identifier: $format"))
@@ -24,6 +24,10 @@ function load_moi_model(file_path::AbstractString; format::Symbol=:mof)
     return moi
 end
 
+function save_moi(model::MOI.ModelLike, filename::AbstractString)
+    MOI.write_to_file(model, filename)
+    return nothing
+end
 
 function from_moi(moi_model)
     qp_model = QPModelBuilder()
@@ -54,11 +58,21 @@ get_bound(moi_sense::MOI.EqualTo{T}) where {T <: Real} = (moi_sense.value, moi_s
 get_bound(moi_sense::MOI.Interval{T}) where {T <: Real} = (moi_sense.lower, moi_sense.upper) .|> Float64
 
 get_term(moi_term::MOI.ScalarAffineTerm{T}) where {T <: Real} = (Float64(moi_term.coefficient), Int(moi_term.variable.value))
-get_term(moi_term::MOI.ScalarQuadraticTerm{T}) where {T <: Real} = (
-    Float64(moi_term.coefficient), Int(moi_term.variable_1.value), Int(moi_term.variable_2.value)
-)
 
-function _parse_quad_expr(expr::MOI.ScalarQuadraticFunction{T}) where {T<:Real}
+# note: somehow mof files scale quad diagonal entries by 2 
+function get_term(moi_term::MOI.ScalarQuadraticTerm{T}) where {T <: Real} 
+    coeff = Float64(moi_term.coefficient)
+    var1 = Int(moi_term.variable_1.value)
+    var2 = Int(moi_term.variable_2.value)
+    if var1 == var2
+        coeff = coeff / 2
+    end
+
+    return (coeff, var1, var2)
+end
+
+
+function _parse_quad_expr(expr::MOI.ScalarQuadraticFunction{T}) where {T <: Real}
     quad_terms = Vector{Tuple{Float64, Int, Int}}(undef, length(expr.quadratic_terms))
     @inbounds for (i, term) in enumerate(expr.quadratic_terms)
         quad_terms[i] = get_term(term)
@@ -72,7 +86,7 @@ function _parse_quad_expr(expr::MOI.ScalarQuadraticFunction{T}) where {T<:Real}
     return quad_terms, lin_terms
 end
 
-function _parse_affine_expr(expr::MOI.ScalarAffineFunction{T}) where {T<:Real}
+function _parse_affine_expr(expr::MOI.ScalarAffineFunction{T}) where {T <: Real}
     lin_terms = Vector{Tuple{Float64, Int}}(undef, length(expr.terms))
     @inbounds for (i, term) in enumerate(expr.terms)
         lin_terms[i] = get_term(term)
@@ -86,7 +100,7 @@ function register_constraint!(qp_model::QPModelBuilder, expr::MOI.ScalarAffineFu
     lhs, rhs = get_bound(sense)
     constant = expr.constant
 
-    register_con!(qp_model; lin_expr_terms = lin_terms, constant = constant, lhs = lhs, rhs = rhs)
+    return register_con!(qp_model; lin_expr_terms = lin_terms, constant = constant, lhs = lhs, rhs = rhs)
 end
 
 
@@ -94,19 +108,19 @@ function register_constraint!(qp_model::QPModelBuilder, expr::MOI.ScalarQuadrati
     quad_terms, lin_terms = _parse_quad_expr(expr)
     lhs, rhs = get_bound(sense)
     constant = expr.constant
-    
-    register_con!(qp_model; lin_expr_terms = lin_terms, quad_expr_terms = quad_terms, constant = constant, lhs = lhs, rhs = rhs)
+
+    return register_con!(qp_model; lin_expr_terms = lin_terms, quad_expr_terms = quad_terms, constant = constant, lhs = lhs, rhs = rhs)
 end
 
 
 function register_constraint!(qp_model::QPModelBuilder, expr::MOI.VariableIndex, sense::MOIConSense)
     lhs, rhs = get_bound(sense)
 
-    register_var_info!(qp_model, expr.value; lb = lhs, ub = rhs)
+    return register_var_info!(qp_model, expr.value; lb = lhs, ub = rhs)
 end
 
 
-register_constraint!(qp_model::QPModelBuilder, expr::MOI.VariableIndex, ::S) where {S <: MOIVarSense} = 
+register_constraint!(qp_model::QPModelBuilder, expr::MOI.VariableIndex, ::S) where {S <: MOIVarSense} =
     register_var_info!(qp_model, expr.value; var_type = VarSenseMapping[S])
 
 
@@ -114,6 +128,6 @@ function register_objective!(qp_model::QPModelBuilder, expr::MOI.ScalarAffineFun
     lin_terms = _parse_affine_expr(expr)
     constant = expr.constant
     obj_sense = ObjSenseMapping[sense]
-    
-    register_obj!(qp_model, constant, obj_sense; lin_expr_terms=lin_terms)
+
+    return register_obj!(qp_model, constant, obj_sense; lin_expr_terms = lin_terms)
 end

@@ -36,7 +36,7 @@ end
 
 function add_quad!(expr::QuadExprBuilder, id1::VarId, id2::VarId, val::Float64)
     id1, id2 = id1 > id2 ? (id2, id1) : (id1, id2)
-    expr.quad[(id1, id2)] = get(expr.quad, (id1, id2), 0) + val
+    return expr.quad[(id1, id2)] = get(expr.quad, (id1, id2), 0) + val
 end
 
 #TODO: modify this function to work with the current implementation of QuadExpr
@@ -60,6 +60,7 @@ end
 
 
 struct ConstraintBuilder
+    id::Int
     expr::QuadExprBuilder
     lhs::Float64
     rhs::Float64
@@ -68,7 +69,7 @@ end
 function build(builder::ConstraintBuilder)
     quad_expr = build(builder.expr)
 
-    return Constraint(quad_expr, builder.lhs, builder.rhs)
+    return Constraint(builder.id, quad_expr, builder.lhs, builder.rhs)
 end
 
 mutable struct QPModelBuilder
@@ -82,13 +83,13 @@ end
 QPModelBuilder() = QPModelBuilder(Dict{VarId, VarInfo}(), Vector{ConstraintBuilder}(), QuadExprBuilder(), :undef)
 
 function register_con!(
-    model::QPModelBuilder;
-    quad_expr_terms::Vector{Tuple{Float64, VarId, VarId}} = Tuple{Float64, VarId, VarId}[],
-    lin_expr_terms::Vector{Tuple{Float64, VarId}} = Tuple{Float64, VarId}[],
-    constant::Float64 = 0.0,
-    lhs::Float64 = -Inf,
-    rhs::Float64 = Inf
-)   
+        model::QPModelBuilder;
+        quad_expr_terms::Vector{Tuple{Float64, VarId, VarId}} = Tuple{Float64, VarId, VarId}[],
+        lin_expr_terms::Vector{Tuple{Float64, VarId}} = Tuple{Float64, VarId}[],
+        constant::Float64 = 0.0,
+        lhs::Float64 = -Inf,
+        rhs::Float64 = Inf
+    )
     quad_expr = QuadExprBuilder(constant)
 
     for (coeff, var_id_1, var_id_2) in quad_expr_terms
@@ -102,12 +103,15 @@ function register_con!(
         add_lin!(quad_expr, var_id, coeff)
     end
 
-    push!(model.cons, ConstraintBuilder(quad_expr, lhs, rhs))
+    con_id = length(model.cons) + 1
+
+    return push!(model.cons, ConstraintBuilder(con_id, quad_expr, lhs, rhs))
 end
 
-function register_var_info!(model::QPModelBuilder, id::VarId; 
-    var_type::Symbol = :cont, lb::Float64=-Inf, ub::Float64=Inf
-)
+function register_var_info!(
+        model::QPModelBuilder, id::VarId;
+        var_type::Symbol = :cont, lb::Float64 = -Inf, ub::Float64 = Inf
+    )
     if !haskey(model.vars, id)
         model.vars[id] = VarInfo(lb, ub, var_type)
         return
@@ -124,16 +128,16 @@ function register_var_info!(model::QPModelBuilder, id::VarId;
     lb = max(var_info.lb, lb)
     ub = min(var_info.ub, ub)
 
-    model.vars[id] = VarInfo(lb, ub, var_type)
+    return model.vars[id] = VarInfo(lb, ub, var_type)
 end
 
 function register_obj!(
-    model::QPModelBuilder,
-    constant::Float64,
-    obj_sense::Symbol;
-    quad_expr_terms::Vector{Tuple{Float64, VarId, VarId}} = Tuple{Float64, VarId, VarId}[],
-    lin_expr_terms::Vector{Tuple{Float64, VarId}} = Tuple{Float64, VarId}[],
-)
+        model::QPModelBuilder,
+        constant::Float64,
+        obj_sense::Symbol;
+        quad_expr_terms::Vector{Tuple{Float64, VarId, VarId}} = Tuple{Float64, VarId, VarId}[],
+        lin_expr_terms::Vector{Tuple{Float64, VarId}} = Tuple{Float64, VarId}[],
+    )
     quad_expr = QuadExprBuilder(constant)
 
     for (coeff, var_id_1, var_id_2) in quad_expr_terms
@@ -148,19 +152,19 @@ function register_obj!(
     end
 
     model.obj_expr = quad_expr
-    model.obj_sense = obj_sense
+    return model.obj_sense = obj_sense
 end
 
 
 function build_model(builder::QPModelBuilder)
-    
+
     vars = Dict{VarId, IntVar}()
     sizehint!(vars, length(builder.vars))
     for (var_id, var_info) in builder.vars
         var_info.var_type == :cont && error("continous variables are unsupported")
         vars[var_id] = IntVar(var_info.lb, var_info.ub)
     end
-    
+
     cons = Vector{Constraint}(undef, length(builder.cons))
     @inbounds for (i, con_builder) in enumerate(builder.cons)
         cons[i] = build(con_builder)

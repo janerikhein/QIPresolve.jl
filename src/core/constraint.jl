@@ -1,4 +1,3 @@
-
 """
     Constraint
 
@@ -9,6 +8,7 @@ Represent a bound constraint
 where `qe` is a `QuadExpr` and `lhs`/`rhs` are scalar bounds.
 """
 mutable struct Constraint
+    id::Int
     qe::QuadExpr
     lhs::Float64
     rhs::Float64
@@ -23,6 +23,7 @@ After normalization, `con.qe.constant == 0.0` and `lhs`/`rhs` are shifted by the
 previous constant so the constraint is equivalent.
 """
 function normalize!(con::Constraint)
+    normalize!(con.qe)
     con.lhs -= con.qe.constant
     con.rhs -= con.qe.constant
     con.qe.constant = 0.0
@@ -49,7 +50,7 @@ function symmetrize!(con::Constraint)
     quad_mat = quad(con.qe)
     lin_vec = lin(con.qe)
 
-    # symmetrize into 2*lhs <= x'(Q+Q')x + 2ax <= 2*rhs 
+    # symmetrize into 2*lhs <= x'(Q+Q')x + 2ax <= 2*rhs
     quad_mat .+= transpose(quad_mat)
     lin_vec .*= 2
     con.qe.constant *= 2
@@ -66,7 +67,7 @@ to the constraint expression and normalize bounds.
 """
 @inline function affine_transform!(con::Constraint, var_id::VarId, scale::Float64, offset::Float64)
     affine_transform!(con.qe, var_id, scale, offset)
-    normalize!(con)
+    return normalize!(con)
 end
 
 """
@@ -77,5 +78,5 @@ to the constraint expression and normalize bounds.
 """
 @inline function lin_transform!(con::Constraint, var_id::VarId, other_id::VarId, a::Float64, b::Float64)
     lin_transform!(con.qe, var_id, other_id, a, b)
-    normalize!(con)
+    return normalize!(con)
 end

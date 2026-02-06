@@ -7,7 +7,7 @@ const LinTerm = Tuple{Float64, PC.VarId}
 
 empty_qe() = PC.QuadExpr(QuadTerm[], LinTerm[])
 
-function assert_same_expr(a::PC.QuadExpr, b::PC.QuadExpr; atol::Float64 = 1e-12)
+function assert_same_expr(a::PC.QuadExpr, b::PC.QuadExpr; atol::Float64 = 1.0e-12)
     @test a.nvars == b.nvars
     @test a.cap == b.cap
     @test a.pos_to_var[1:a.nvars] == b.pos_to_var[1:b.nvars]
@@ -15,7 +15,7 @@ function assert_same_expr(a::PC.QuadExpr, b::PC.QuadExpr; atol::Float64 = 1e-12)
     @test a.perm == b.perm
     @test isapprox(a.constant, b.constant; atol = atol)
     @test isapprox(a.lin_buf, b.lin_buf; atol = atol)
-    @test isapprox(a.quad_buf, b.quad_buf; atol = atol)
+    return @test isapprox(a.quad_buf, b.quad_buf; atol = atol)
 end
 
 @testset "QuadExpr constructor and views" begin
@@ -135,6 +135,84 @@ end
     @test collect(PC.vars(qe)) == [1, 3, 4]
 end
 
+@testset "QuadExpr remove_var! edge cases" begin
+    qe_missing = empty_qe()
+    PC.add_var!(qe_missing, 1)
+    PC.add_var!(qe_missing, 2)
+    PC.set_lin_coeff!(qe_missing, 1, 2.0)
+    PC.set_quad_coeff!(qe_missing, 1, 2, 3.0; sym = true)
+
+    qe_snapshot = deepcopy(qe_missing)
+    @test PC.remove_var!(qe_missing, 99) == false
+    assert_same_expr(qe_missing, qe_snapshot)
+
+    qe_last = empty_qe()
+    PC.add_var!(qe_last, 5)
+    PC.add_var!(qe_last, 6)
+    PC.add_var!(qe_last, 7)
+    PC.set_lin_coeff!(qe_last, 5, 1.0)
+    PC.set_lin_coeff!(qe_last, 6, -2.0)
+    PC.set_lin_coeff!(qe_last, 7, 3.0)
+    PC.set_quad_coeff!(qe_last, 5, 6, 4.0)
+    PC.set_quad_coeff!(qe_last, 6, 5, 1.5)
+
+    perm_before = copy(qe_last.perm)
+    pos_to_var_before = copy(qe_last.pos_to_var)
+    var_to_pos_before = copy(qe_last.var_to_pos)
+
+    @test PC.remove_var!(qe_last, 7) == true
+    @test qe_last.nvars == 2
+    @test qe_last.pos_to_var[1:2] == pos_to_var_before[1:2]
+    @test qe_last.var_to_pos[5] == var_to_pos_before[5]
+    @test qe_last.var_to_pos[6] == var_to_pos_before[6]
+    @test !haskey(qe_last.var_to_pos, 7)
+    @test qe_last.perm[1:2] == perm_before[1:2]
+    @test qe_last.perm[3] == perm_before[3]
+    @test PC.get_lin_coeff(qe_last, 5) == 1.0
+    @test PC.get_lin_coeff(qe_last, 6) == -2.0
+    @test PC.get_quad_coeff(qe_last, 5, 6) == 4.0
+    @test PC.get_quad_coeff(qe_last, 6, 5) == 1.5
+    @test PC.get_lin_coeff(qe_last, 7) == 0.0
+
+    qe_noclear = empty_qe()
+    PC.add_var!(qe_noclear, 1)
+    PC.add_var!(qe_noclear, 2)
+    PC.add_var!(qe_noclear, 3)
+    PC.set_lin_coeff!(qe_noclear, 1, 1.0)
+    PC.set_lin_coeff!(qe_noclear, 2, 2.0)
+    PC.set_lin_coeff!(qe_noclear, 3, 3.0)
+    PC.set_quad_coeff!(qe_noclear, 2, 1, 4.0)
+    PC.set_quad_coeff!(qe_noclear, 1, 2, 5.0)
+    PC.set_quad_coeff!(qe_noclear, 2, 3, 6.0)
+    PC.set_quad_coeff!(qe_noclear, 3, 2, 7.0)
+    PC.set_quad_coeff!(qe_noclear, 1, 3, 8.0)
+    PC.set_quad_coeff!(qe_noclear, 3, 1, 9.0)
+
+    pos2 = qe_noclear.var_to_pos[2]
+    phys2 = qe_noclear.perm[pos2]
+    phys1 = qe_noclear.perm[qe_noclear.var_to_pos[1]]
+    phys3 = qe_noclear.perm[qe_noclear.var_to_pos[3]]
+
+    lin2 = qe_noclear.lin_buf[phys2]
+    q21 = qe_noclear.quad_buf[phys2, phys1]
+    q12 = qe_noclear.quad_buf[phys1, phys2]
+    q23 = qe_noclear.quad_buf[phys2, phys3]
+    q32 = qe_noclear.quad_buf[phys3, phys2]
+
+    @test PC.remove_var!(qe_noclear, 2; clear_buf = false) == true
+    @test qe_noclear.nvars == 2
+    @test qe_noclear.perm[qe_noclear.nvars + 1] == phys2
+    @test qe_noclear.lin_buf[phys2] == lin2
+    @test qe_noclear.quad_buf[phys2, phys1] == q21
+    @test qe_noclear.quad_buf[phys1, phys2] == q12
+    @test qe_noclear.quad_buf[phys2, phys3] == q23
+    @test qe_noclear.quad_buf[phys3, phys2] == q32
+    @test PC.get_lin_coeff(qe_noclear, 1) == 1.0
+    @test PC.get_lin_coeff(qe_noclear, 3) == 3.0
+    @test PC.get_quad_coeff(qe_noclear, 1, 3) == 8.0
+    @test PC.get_quad_coeff(qe_noclear, 3, 1) == 9.0
+end
+
 @testset "QuadExpr capacity growth" begin
     qe = empty_qe()
     @test qe.cap == 1
@@ -167,13 +245,13 @@ end
 
     qe_scale0 = deepcopy(qe0)
     PC.affine_transform!(qe_scale0, 1, 0.0, 2.0)
-    @test isapprox(qe_scale0.constant, 7.0 + 2.0 * 5.0 + 4.0 * 1.0; atol = 1e-12)
-    @test isapprox(PC.get_lin_coeff(qe_scale0, 1), 0.0; atol = 1e-12)
-    @test isapprox(PC.get_lin_coeff(qe_scale0, 2), 6.0 + 2.0 * (2.0 + 3.0); atol = 1e-12)
-    @test isapprox(PC.get_quad_coeff(qe_scale0, 1, 1), 0.0; atol = 1e-12)
-    @test isapprox(PC.get_quad_coeff(qe_scale0, 1, 2), 0.0; atol = 1e-12)
-    @test isapprox(PC.get_quad_coeff(qe_scale0, 2, 1), 0.0; atol = 1e-12)
-    @test isapprox(PC.get_quad_coeff(qe_scale0, 2, 2), 4.0; atol = 1e-12)
+    @test isapprox(qe_scale0.constant, 7.0 + 2.0 * 5.0 + 4.0 * 1.0; atol = 1.0e-12)
+    @test isapprox(PC.get_lin_coeff(qe_scale0, 1), 0.0; atol = 1.0e-12)
+    @test isapprox(PC.get_lin_coeff(qe_scale0, 2), 6.0 + 2.0 * (2.0 + 3.0); atol = 1.0e-12)
+    @test isapprox(PC.get_quad_coeff(qe_scale0, 1, 1), 0.0; atol = 1.0e-12)
+    @test isapprox(PC.get_quad_coeff(qe_scale0, 1, 2), 0.0; atol = 1.0e-12)
+    @test isapprox(PC.get_quad_coeff(qe_scale0, 2, 1), 0.0; atol = 1.0e-12)
+    @test isapprox(PC.get_quad_coeff(qe_scale0, 2, 2), 4.0; atol = 1.0e-12)
 
     qe_invert = deepcopy(qe0)
     PC.affine_transform!(qe_invert, 2, 1.7, -0.6)
@@ -218,7 +296,7 @@ end
             x = randn(3)
             x_sub = copy(x)
             x_sub[1] = a * x[1] + b * x[2]
-            @test isapprox(PC.eval_full(qe, x), PC.eval_full(qe0, x_sub); atol = 1e-8)
+            @test isapprox(PC.eval_full(qe, x), PC.eval_full(qe0, x_sub); atol = 1.0e-8)
         end
     end
 

@@ -3,6 +3,9 @@ import QIPresolve.PresolvingCore as PC
 
 const QuadTerm = Tuple{Float64, PC.VarId, PC.VarId}
 const LinTerm = Tuple{Float64, PC.VarId}
+const _NEXT_CON_ID = Ref(0)
+
+next_con_id() = (_NEXT_CON_ID[] += 1)
 
 function make_model()
     vars = Dict{PC.VarId, PC.IntVar}(
@@ -12,7 +15,7 @@ function make_model()
 
     quad_terms = QuadTerm[(1.0, 1, 1), (0.5, 1, 2)]
     lin_terms = LinTerm[(2.0, 1), (-1.0, 2)]
-    con = PC.Constraint(PC.QuadExpr(quad_terms, lin_terms; constant = 1.2), -3.0, 4.0)
+    con = PC.Constraint(next_con_id(), PC.QuadExpr(quad_terms, lin_terms; constant = 1.2), -3.0, 4.0)
 
     obj_terms = QuadTerm[(2.0, 1, 2)]
     obj_lin = LinTerm[(1.0, 2)]
@@ -45,7 +48,7 @@ end
     con = model.cons[1]
     shift_lhs = con0.lhs - con.lhs
     shift_rhs = con0.rhs - con.rhs
-    @test isapprox(shift_lhs, shift_rhs; atol = 1e-12)
+    @test isapprox(shift_lhs, shift_rhs; atol = 1.0e-12)
     @test con.qe.constant == 0.0
 
     for _ in 1:5
@@ -55,11 +58,11 @@ end
 
         val_before = PC.eval_full(con0.qe, x_sub)
         val_after = PC.eval_full(con.qe, x)
-        @test isapprox(val_after, val_before - shift_lhs; atol = 1e-8)
+        @test isapprox(val_after, val_before - shift_lhs; atol = 1.0e-8)
 
         obj_before = PC.eval_full(model0.obj_expr, x_sub)
         obj_after = PC.eval_full(model.obj_expr, x)
-        @test isapprox(obj_after, obj_before; atol = 1e-8)
+        @test isapprox(obj_after, obj_before; atol = 1.0e-8)
     end
 end
 
@@ -73,7 +76,7 @@ end
     con = model.cons[1]
     shift_lhs = con0.lhs - con.lhs
     shift_rhs = con0.rhs - con.rhs
-    @test isapprox(shift_lhs, shift_rhs; atol = 1e-12)
+    @test isapprox(shift_lhs, shift_rhs; atol = 1.0e-12)
     @test con.qe.constant == 0.0
 
     for _ in 1:5
@@ -83,11 +86,11 @@ end
 
         val_before = PC.eval_full(con0.qe, x_sub)
         val_after = PC.eval_full(con.qe, x)
-        @test isapprox(val_after, val_before - shift_lhs; atol = 1e-8)
+        @test isapprox(val_after, val_before - shift_lhs; atol = 1.0e-8)
 
         obj_before = PC.eval_full(model0.obj_expr, x_sub)
         obj_after = PC.eval_full(model.obj_expr, x)
-        @test isapprox(obj_after, obj_before; atol = 1e-8)
+        @test isapprox(obj_after, obj_before; atol = 1.0e-8)
     end
 end
 
@@ -105,7 +108,7 @@ end
     con = model.cons[1]
     shift_lhs = con0.lhs - con.lhs
     shift_rhs = con0.rhs - con.rhs
-    @test isapprox(shift_lhs, shift_rhs; atol = 1e-12)
+    @test isapprox(shift_lhs, shift_rhs; atol = 1.0e-12)
     @test con.qe.constant == 0.0
 
     for _ in 1:5
@@ -115,10 +118,10 @@ end
 
         val_before = PC.eval_full(con0.qe, x_sub)
         val_after = PC.eval_full(con.qe, x)
-        @test isapprox(val_after, val_before - shift_lhs; atol = 1e-8)
+        @test isapprox(val_after, val_before - shift_lhs; atol = 1.0e-8)
 
         obj_before = PC.eval_full(model0.obj_expr, x_sub)
         obj_after = PC.eval_full(model.obj_expr, x)
-        @test isapprox(obj_after, obj_before; atol = 1e-8)
+        @test isapprox(obj_after, obj_before; atol = 1.0e-8)
     end
 end

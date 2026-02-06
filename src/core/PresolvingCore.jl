@@ -3,8 +3,9 @@ module PresolvingCore
 include("quad_expr.jl")
 include("constraint.jl")
 include("model.jl")
+include("utils.jl")
 
-export 
+export
     # Model definition
     QuadExpr,
     IntVar,

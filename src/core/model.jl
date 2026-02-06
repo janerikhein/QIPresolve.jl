@@ -1,4 +1,4 @@
-const VarId = Int 
+const VarId = Int
 
 """
     IntVar(lb, ub)
@@ -28,7 +28,7 @@ mutable struct QPModel
     function QPModel(vars::Dict{VarId, IntVar}, cons::Vector{Constraint}, obj_expr::QuadExpr, obj_sense::Symbol)
         max_var_id = max(keys(vars)...)
 
-        new(vars, cons, obj_expr, obj_sense, max_var_id)
+        return new(vars, cons, obj_expr, obj_sense, max_var_id)
     end
 end
 
@@ -40,7 +40,7 @@ Add a new variable to `model` with bounds `info` and return its id.
 """
 function add_var!(model::QPModel, info::IntVar)
     new_id = model._max_var_id += 1
-    model.vars[new_id] = info 
+    model.vars[new_id] = info
 
     return new_id
 end
@@ -70,7 +70,7 @@ function var_bound_shift!(model::QPModel, var_id::VarId, shift::Float64)
 
     # register domain shift
     info = model.vars[var_id]
-    set_var_bounds!(model, var_id, info.lb - shift, info.ub - shift)
+    return set_var_bounds!(model, var_id, info.lb - shift, info.ub - shift)
 end
 
 
@@ -87,7 +87,7 @@ function affine_transform!(model::QPModel, var_id::VarId, scale::Float64, offset
     end
 
     # apply transformation to objective expression
-    affine_transform!(model.obj_expr, var_id, scale, offset)
+    return affine_transform!(model.obj_expr, var_id, scale, offset)
 end
 
 
@@ -106,7 +106,40 @@ function lin_transform!(model::QPModel, var_id::VarId, other_id::VarId, a::Float
     end
 
     # apply transformation to objective expression
-    lin_transform!(model.obj_expr, var_id, other_id, a, b)
+    return lin_transform!(model.obj_expr, var_id, other_id, a, b)
 end
 
 
+function fix_vars!(model::QPModel)
+
+    for (var_id, var) in model.vars
+        var.lb != var.ub && continue
+        affine_transform!(model, var_id, 1.0, var.lb)
+        println("var_id", var_id, model.cons[9])
+        @assert model.vars[var_id].lb == model.vars[var_id].ub == 0.0
+        for con in model.cons
+            remove_var!(con.qe, var_id)
+        end
+        delete!(model.vars, var_id)
+    end
+
+    # cleanup empty cons and cons becoming var bounds
+    for i in reverse(eachindex(model.cons))
+        con = model.cons[i]
+        normalize!(con)
+        if is_empty(con.qe)
+            deleteat!(model.cons, i)
+        end
+        if is_singleton(con.qe)
+            var_id = vars(con.qe)[1]
+            coeff = get_lin_coeff(con.qe, var_id)
+            var_bounds = model.vars[var_id]
+            new_lb = max(var_bounds.lb, ceil(con.lhs / coeff))
+            new_ub = min(var_bounds.ub, floor(con.rhs / coeff))
+            model.vars[var_id] = IntVar(new_lb, new_ub)
+            deleteat!(model.cons, i)
+        end
+    end
+    
+    return model
+end

@@ -3,3 +3,4 @@
 *.jl.mem
 /Manifest*.toml
 scratch_files/
+laman_instance.mof.json

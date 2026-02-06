@@ -203,6 +203,17 @@ Mutating the view writes into the underlying `lin_buf`.
     return @view qe.lin_buf[p]
 end
 
+
+"""
+    checks if expression is empty, assumes expr is normalized
+"""
+is_empty(qe::QuadExpr) = (qe.nvars == 0)
+
+"""
+    checks if expression is single linear term, i.e. var bound, assumes expr is normalized
+"""
+is_singleton(qe::QuadExpr) = (qe.nvars == 1 && qe.quad_buf[qe.perm[1], qe.perm[1]] == 0)
+    
 """
     vars(qe) -> AbstractVector{VarId}
 
@@ -423,6 +434,27 @@ function remove_var!(qe::QuadExpr, id::VarId; clear_buf::Bool = true)
 
     qe.nvars -= 1
     return true
+end
+
+function normalize!(qe::QuadExpr)
+    #TODO: check if vars are in the constraint for which their corresponding row/column and lin coeff are all zero. in that case remove that var
+    for pos in reverse(1:qe.nvars)
+        phys_pos = qe.perm[pos]
+        
+        qe.lin_buf[phys_pos] != 0 && continue
+            
+        all_zero = true
+        for other_pos in 1:qe.nvars
+            phys_other = qe.perm[other_pos]
+            if qe.quad_buf[phys_pos, phys_other] != 0 || qe.quad_buf[phys_other, phys_pos] != 0
+                all_zero = false
+                break
+            end
+        end
+        if all_zero
+            remove_var!(qe, qe.pos_to_var[pos])
+        end
+    end
 end
 
 
@@ -683,7 +715,7 @@ function lin_transform!(
             if qkj_old != 0.0
                 qe.quad_buf[pm, pj] += b * qkj_old
                 qe.quad_buf[pk, pj]  = a * qkj_old
-            end
+            end^
             if qjk_old != 0.0
                 qe.quad_buf[pj, pm] += b * qjk_old
                 qe.quad_buf[pj, pk]  = a * qjk_old
@@ -694,7 +726,15 @@ function lin_transform!(
     return qe
 end
 
-    
-    
+function scale_transform!(qe::QuadExpr, scale::Float64)
+    for posj in 1:qe.nvars
+        for posi in 1:qe.nvars
+            qe.quad_buf[posi, posj] *= scale
+        end
+    end
+    for pos in 1:qe.nvars
+        qe.lin_buf[pos] *= scale
+    end
 
-    
+    return qe
+end
