@@ -69,7 +69,7 @@ function gauss_jordan_gf2!(rows::Vector{BitVector}, pivot_rule::T) where {T <: P
             break
         end
 
-        # eliminate all entries in pivot column in all other rows
+        # eliminate all entries in pivot column in all other rows TODO: compuet row indices before hand and then use simd
         @inbounds for row_idx in eachindex(rows)
             if row_idx === pivot_row_idx
                 continue

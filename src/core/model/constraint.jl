@@ -14,6 +14,13 @@ mutable struct Constraint
     rhs::Float64
 end
 
+is_equality(con::Constraint) = (con.lhs == con.rhs)
+
+# TODO: implement check for fractional coefficients
+is_integer(con::Constraint) = true
+
+vars(con::Constraint) = vars(con.qe)
+
 """
     normalize!(con::Constraint) -> Constraint
 

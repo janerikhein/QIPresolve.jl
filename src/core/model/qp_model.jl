@@ -10,6 +10,8 @@ struct IntVar
     ub::Float64
 end
 
+is_binary(var::IntVar) = (var.lb == 0.0 && var.ub == 1.0)
+
 """
     QPModel(vars, cons, obj_expr, obj_sense)
 
@@ -31,6 +33,8 @@ mutable struct QPModel
         return new(vars, cons, obj_expr, obj_sense, max_var_id)
     end
 end
+
+nvars(model::QPModel) = length(model.vars)
 
 
 """

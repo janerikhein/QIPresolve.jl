@@ -277,6 +277,10 @@ Return the quadratic coefficient for variables `id1` and `id2`.
 If either variable is not present in the expression, returns `0.0`.
 """
 @inline function get_quad_coeff(qe::QuadExpr, id1::VarId, id2::VarId)
+    if id2 < id1
+        id1, id2 = id2, id1
+    end
+
     pos1 = var_pos(qe, id1)
     pos1 == 0 && return 0.0
     pos2 = var_pos(qe, id2)

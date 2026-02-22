@@ -113,6 +113,10 @@ function Base.show(io::IO, model::QPModel)
     return _qp_show(io, model)
 end
 
+function Base.show(io::IO, ::MIME"text/plain", model::QPModel)
+    return _qp_show(io, model)
+end
+
 function Base.show(io::IO, qe::QuadExpr)
     return println(io, _qp_format_expr(qe))
 end
@@ -121,6 +125,36 @@ function Base.show(io::IO, con::Constraint)
     return println(io, _qp_format_constraint(con))
 end
 
-function Base.show(io::IO, ::MIME"text/plain", model::QPModel)
-    return _qp_show(io, model)
+
+function Base.show(io::IO, con::XorConstraint)
+    n = length(con.pos_to_var)
+    terms = String[]
+
+    # Linear XOR terms
+    @inbounds for i in 1:n
+        if con.par[i]
+            push!(terms, "p$(con.pos_to_var[i])")
+        end
+    end
+
+    # Conjunction (quadratic) terms
+    @inbounds for i in 1:n-1
+        for j in i+1:n
+            if con.conj[i, j]
+                v1 = con.pos_to_var[i]
+                v2 = con.pos_to_var[j]
+                push!(terms, "(p$(v1) ∧ p$(v2))")
+            end
+        end
+    end
+
+    if isempty(terms)
+        print(io, con.rhs ? "0 = 1" : "0 = 0")
+        return
+    end
+
+    print(io, join(terms, " ⊕  "))
+    print(io, " = ", con.rhs ? "1" : "0")
 end
+
+

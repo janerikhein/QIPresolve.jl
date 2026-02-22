@@ -1,8 +1,15 @@
 module PresolvingCore
 
-include("quad_expr.jl")
-include("constraint.jl")
-include("model.jl")
+include("model/quad_expr.jl")
+include("model/constraint.jl")
+include("model/qp_model.jl")
+
+
+#include("gauss_jordan_gf2.jl")
+include("parity/implication_network.jl")
+include("parity/xor_constraint.jl")
+include("parity/xor_model.jl")
+
 include("utils.jl")
 
 export
@@ -10,7 +17,10 @@ export
     QuadExpr,
     IntVar,
     Constraint,
-    QPModel
+    QPModel,
+
+    # Parity reductions
+    get_parity_model
 
 
 end # module
