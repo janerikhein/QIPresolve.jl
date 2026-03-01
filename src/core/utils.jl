@@ -36,7 +36,6 @@ function _qp_format_expr(qe::QuadExpr)
     first = true
     n = length(ids)
 
-    # quadratic terms (combine symmetric pairs)
     for i in 1:n
         id_i = ids[i]
         coef = get_quad_coeff(qe, id_i, id_i)
@@ -45,7 +44,7 @@ function _qp_format_expr(qe::QuadExpr)
         end
         for j in (i + 1):n
             id_j = ids[j]
-            coef = get_quad_coeff(qe, id_i, id_j) + get_quad_coeff(qe, id_j, id_i)
+            coef = get_quad_coeff(qe, id_i, id_j)
             if !_qp_iszero(coef)
                 first = _qp_append_term!(io, coef, "x$(id_i)x$(id_j)", false, first)
             end
@@ -80,11 +79,11 @@ function _qp_format_constraint(con::Constraint)
     if isfinite(lhs) && isfinite(rhs)
         return string("c", con.id, ": ", lhs, " <= ", expr, " <= ", rhs)
     elseif isfinite(lhs)
-        return string("c",con.id, ": ", lhs, " <= ", expr)
+        return string("c", con.id, ": ", lhs, " <= ", expr)
     elseif isfinite(rhs)
-        return string("c",con.id, ": ", expr, " <= ", rhs)
+        return string("c", con.id, ": ", expr, " <= ", rhs)
     else
-        return string("c",con.id, ": ",expr)
+        return string("c", con.id, ": ", expr)
     end
 end
 
@@ -107,6 +106,7 @@ function _qp_show(io::IO, model::QPModel)
     for con in model.cons
         println(io, "  ", _qp_format_constraint(con))
     end
+    return
 end
 
 function Base.show(io::IO, model::QPModel)
@@ -136,14 +136,15 @@ function Base.show(io::IO, con::XorConstraint)
             push!(terms, "p$(con.pos_to_var[i])")
         end
     end
-
-    # Conjunction (quadratic) terms
-    @inbounds for i in 1:n-1
-        for j in i+1:n
-            if con.conj[i, j]
-                v1 = con.pos_to_var[i]
-                v2 = con.pos_to_var[j]
-                push!(terms, "(p$(v1) ∧ p$(v2))")
+    if con.conj !== nothing
+        # Conjunction (quadratic) terms
+        @inbounds for i in 1:(n - 1)
+            for j in (i + 1):n
+                if con.conj[i, j]
+                    v1 = con.pos_to_var[i]
+                    v2 = con.pos_to_var[j]
+                    push!(terms, "(p$(v1) ∧ p$(v2))")
+                end
             end
         end
     end
@@ -154,7 +155,5 @@ function Base.show(io::IO, con::XorConstraint)
     end
 
     print(io, join(terms, " ⊕  "))
-    print(io, " = ", con.rhs ? "1" : "0")
+    return print(io, " = ", con.rhs ? "1" : "0")
 end
-
-

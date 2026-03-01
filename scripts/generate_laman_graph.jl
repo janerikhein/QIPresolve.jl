@@ -36,8 +36,8 @@ if length(args) >= 1 && (args[1] == "-h" || args[1] == "--help")
     exit(0)
 end
 
-n = length(args) >= 1 ? parse_int(args[1], "n") : 5
-R = length(args) >= 2 ? parse_int(args[2], "R") : 10
+n = length(args) >= 1 ? parse_int(args[1], "n") : 10
+R = length(args) >= 2 ? parse_int(args[2], "R") : 40
 pH2 = length(args) >= 3 ? parse_float(args[3], "pH2") : 0.5
 seed = length(args) >= 4 ? parse_int(args[4], "seed") : 0
 out = length(args) >= 5 ? args[5] : "laman_graph.png"

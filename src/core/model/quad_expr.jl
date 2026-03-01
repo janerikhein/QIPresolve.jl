@@ -101,11 +101,11 @@ Buffer capacity is set to `ceil(buf_size_factor * nvars)` (at least 1) to allow
 future variable additions without immediate resizing.
 """
 function QuadExpr(
-    quad_terms::Vector{Tuple{Float64, VarId, VarId}},
-    lin_terms::Vector{Tuple{Float64, VarId}};
-    constant::Float64 = 0.0,
-    buf_size_factor::Float64 = 2.0,
-)
+        quad_terms::Vector{Tuple{Float64, VarId, VarId}},
+        lin_terms::Vector{Tuple{Float64, VarId}};
+        constant::Float64 = 0.0,
+        buf_size_factor::Float64 = 2.0,
+    )
     @assert buf_size_factor >= 1.0
 
     # collect variables
@@ -134,10 +134,10 @@ function QuadExpr(
     # Allocate buffers and mappings
     pos_to_var = Vector{VarId}(undef, cap)
     var_to_pos = Dict{VarId, Int}()
-    perm       = collect(1:cap)
+    perm = collect(1:cap)
 
     quad_buf = zeros(Float64, cap, cap)
-    lin_buf  = zeros(Float64, cap)
+    lin_buf = zeros(Float64, cap)
 
     # register variables at logical positions 1:nvars
     for (pos, v) in enumerate(vars)
@@ -213,7 +213,7 @@ is_empty(qe::QuadExpr) = (qe.nvars == 0)
     checks if expression is single linear term, i.e. var bound, assumes expr is normalized
 """
 is_singleton(qe::QuadExpr) = (qe.nvars == 1 && qe.quad_buf[qe.perm[1], qe.perm[1]] == 0)
-    
+
 """
     vars(qe) -> AbstractVector{VarId}
 
@@ -304,7 +304,6 @@ If the variable is not present in the expression, returns `0.0`.
     i = qe.perm[pos]
     @inbounds return qe.lin_buf[i]
 end
-
 
 
 """
@@ -409,7 +408,7 @@ function remove_var!(qe::QuadExpr, id::VarId; clear_buf::Bool = true)
     pos == 0 && return false
 
     last = qe.nvars
-    phys_pos  = qe.perm[pos]
+    phys_pos = qe.perm[pos]
     phys_last = qe.perm[last]
 
     if pos != last
@@ -444,9 +443,9 @@ function normalize!(qe::QuadExpr)
     #TODO: check if vars are in the constraint for which their corresponding row/column and lin coeff are all zero. in that case remove that var
     for pos in reverse(1:qe.nvars)
         phys_pos = qe.perm[pos]
-        
+
         qe.lin_buf[phys_pos] != 0 && continue
-            
+
         all_zero = true
         for other_pos in 1:qe.nvars
             phys_other = qe.perm[other_pos]
@@ -459,6 +458,7 @@ function normalize!(qe::QuadExpr)
             remove_var!(qe, qe.pos_to_var[pos])
         end
     end
+    return
 end
 
 
@@ -482,16 +482,16 @@ function _ensure_capacity!(qe::QuadExpr, needed::Int)
 
     # grow buffers
     new_quad = zeros(Float64, newcap, newcap)
-    new_lin  = zeros(Float64, newcap)
+    new_lin = zeros(Float64, newcap)
     new_pos_to_var = Vector{VarId}(undef, newcap)
     new_perm = Vector{Int}(undef, newcap)
 
     # copy old content
     @inbounds begin
         new_quad[1:oldcap, 1:oldcap] .= qe.quad_buf
-        new_lin[1:oldcap]            .= qe.lin_buf
-        new_pos_to_var[1:oldcap]     .= qe.pos_to_var
-        new_perm[1:oldcap]           .= qe.perm
+        new_lin[1:oldcap] .= qe.lin_buf
+        new_pos_to_var[1:oldcap] .= qe.pos_to_var
+        new_perm[1:oldcap] .= qe.perm
     end
 
     # initialize new (inactive) logical positions to map to new physical slots
@@ -501,7 +501,7 @@ function _ensure_capacity!(qe::QuadExpr, needed::Int)
     end
 
     qe.quad_buf = new_quad
-    qe.lin_buf  = new_lin
+    qe.lin_buf = new_lin
     qe.pos_to_var = new_pos_to_var
     qe.perm = new_perm
     qe.cap = newcap
@@ -524,14 +524,14 @@ function add_var!(qe::QuadExpr, id::VarId; clear_buf::Bool = false)
     _ensure_capacity!(qe, qe.nvars + 1)
 
     newpos = qe.nvars + 1
-    phys   = qe.perm[newpos]   # free physical slot
+    phys = qe.perm[newpos]   # free physical slot
 
     # register variable at logical position newpos
     qe.nvars = newpos
     qe.pos_to_var[newpos] = id
     qe.var_to_pos[id] = newpos
 
-     # optional clearing buffer
+    # optional clearing buffer
     if clear_buf
         @inbounds begin
             qe.lin_buf[phys] = 0.0
@@ -554,7 +554,7 @@ Throws `ArgumentError` when `scale == 0.0`.
 """
 @inline function invert_affine(scale::Float64, offset::Float64)
     scale == 0.0 && throw(ArgumentError("Cannot invert affine transform with scale = 0"))
-    inv_scale  = 1.0 / scale
+    inv_scale = 1.0 / scale
     inv_offset = -offset / scale
     return inv_scale, inv_offset
 end
@@ -594,7 +594,7 @@ function affine_transform!(qe::QuadExpr, var_id::VarId, scale::Float64, offset::
     pk = qe.perm[posk]  # physical index of var_id
 
     @inbounds begin
-        ck  = qe.lin_buf[pk]
+        ck = qe.lin_buf[pk]
         qkk = qe.quad_buf[pk, pk]
 
         # constant update from ck*xk + qkk*xk^2 with xk := scale*xk + offset
@@ -667,17 +667,17 @@ Notes
 - If you use the symmetric 1/2 x'Qx convention, the formulas differ.
 """
 function lin_transform!(
-    qe::QuadExpr,
-    var_id::VarId,
-    other_id::VarId,
-    a::Float64,
-    b::Float64;
-    invert::Bool = false
-)
+        qe::QuadExpr,
+        var_id::VarId,
+        other_id::VarId,
+        a::Float64,
+        b::Float64;
+        invert::Bool = false
+    )
     if invert
-        (a, b) = invert_lin(a,b)
-    end 
-    
+        (a, b) = invert_lin(a, b)
+    end
+
     posk = var_pos(qe, var_id)
     posk == 0 && return qe
     posm = var_pos(qe, other_id)
@@ -690,8 +690,8 @@ function lin_transform!(
 
     @inbounds begin
         # Save original coefficients involving k and m before overwriting.
-        ck  = qe.lin_buf[pk]
-        cm  = qe.lin_buf[pm]
+        ck = qe.lin_buf[pk]
+        cm = qe.lin_buf[pm]
 
         qkk = qe.quad_buf[pk, pk]
         qkm = qe.quad_buf[pk, pm]
@@ -718,11 +718,11 @@ function lin_transform!(
 
             if qkj_old != 0.0
                 qe.quad_buf[pm, pj] += b * qkj_old
-                qe.quad_buf[pk, pj]  = a * qkj_old
+                qe.quad_buf[pk, pj] = a * qkj_old
             end^
-            if qjk_old != 0.0
+                if qjk_old != 0.0
                 qe.quad_buf[pj, pm] += b * qjk_old
-                qe.quad_buf[pj, pk]  = a * qjk_old
+                qe.quad_buf[pj, pk] = a * qjk_old
             end
         end
     end

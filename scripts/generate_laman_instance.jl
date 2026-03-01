@@ -8,7 +8,6 @@ using QIPresolve.GraphEmbedding: generate_laman_instance
 using QIPresolve.ModelIO: save_moi
 
 
-
 function parse_int(arg::String, name::String)::Int
     try
         return parse(Int, arg)

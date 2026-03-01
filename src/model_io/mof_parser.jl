@@ -59,8 +59,8 @@ get_bound(moi_sense::MOI.Interval{T}) where {T <: Real} = (moi_sense.lower, moi_
 
 get_term(moi_term::MOI.ScalarAffineTerm{T}) where {T <: Real} = (Float64(moi_term.coefficient), Int(moi_term.variable.value))
 
-# note: somehow mof files scale quad diagonal entries by 2 
-function get_term(moi_term::MOI.ScalarQuadraticTerm{T}) where {T <: Real} 
+# note: somehow mof files scale quad diagonal entries by 2
+function get_term(moi_term::MOI.ScalarQuadraticTerm{T}) where {T <: Real}
     coeff = Float64(moi_term.coefficient)
     var1 = Int(moi_term.variable_1.value)
     var2 = Int(moi_term.variable_2.value)

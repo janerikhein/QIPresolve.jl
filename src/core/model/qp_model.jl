@@ -144,6 +144,6 @@ function fix_vars!(model::QPModel)
             deleteat!(model.cons, i)
         end
     end
-    
+
     return model
 end

@@ -4,4 +4,5 @@ using Test
     include("quadexpr_tests.jl")
     include("constraint_tests.jl")
     include("model_tests.jl")
+    include("propagation_tests.jl")
 end

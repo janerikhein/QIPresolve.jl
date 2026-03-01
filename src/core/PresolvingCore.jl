@@ -6,7 +6,7 @@ include("model/qp_model.jl")
 
 
 #include("gauss_jordan_gf2.jl")
-include("parity/implication_network.jl")
+include("parity/propagation.jl")
 include("parity/xor_constraint.jl")
 include("parity/xor_model.jl")
 
