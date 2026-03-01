@@ -2,28 +2,47 @@ const VarId = Int
 
 
 """
-    - var_id_to_pos
-    - pos_to_var_id
-    - cons::Vector{XorConstraint} 
-        main matrix representation + rhs
-    - propagator::ImplicationNetwork.ImpGraph
-        ref to implication network for propagation
-    - pivots::Vector{Int}
-        pivots[i] = j, if (i,j) is pivot element, or pivots[i] = 0 if i not pivot row
+    ParityModel
+
+Store parity constraints and variable-index mappings used by parity reasoning.
+
+Fields:
+- `var_id_to_pos`: map from original variable id to parity-model position.
+- `pos_to_var_id`: inverse map from position to original variable id.
+- `cons`: parity constraints (possibly with conjunction terms).
+- `propagator`: implication-graph propagator built on the same variable order.
 """
 mutable struct ParityModel
     var_id_to_pos::Dict{VarId, Int}
     pos_to_var_id::Vector{Int}
     cons::Vector{XorConstraint}
-    propagator::ImpGraph
+    propagator::ParityPropagator
 end
 
+"""
+    ParityModel(var_to_pos, pos_to_var, cons)
+
+Construct a [`ParityModel`](@ref) and initialize its [`ParityPropagator`](@ref)
+from the provided variable-position mappings.
+"""
 function ParityModel(var_to_pos::Dict{VarId, Int}, pos_to_var::Vector{Int}, cons::Vector{XorConstraint})
-    nvars = length(pos_to_var)
-    implication_graph = ImpGraph(nvars)
+    implication_graph = ParityPropagator(var_to_pos, pos_to_var)
     return ParityModel(var_to_pos, pos_to_var, cons, implication_graph)
 end
 
+"""
+    get_parity_model(model::QPModel) -> ParityModel
+
+Extract parity information from integral equality constraints in `model`.
+
+For each eligible constraint, this builds:
+- one modulo-2 XOR constraint from odd `(diag + linear)` terms,
+- optionally one modulo-4 XOR/XOR-AND constraint when modulo-4 reasoning is
+  valid for all involved non-binary variables.
+
+Variables are then reordered by decreasing participation count and the
+constraints are materialized as [`XorConstraint`](@ref)s.
+"""
 function get_parity_model(model::QPModel)
 
     # build relevant variables ids and constraint indices
@@ -82,8 +101,11 @@ function get_parity_model(model::QPModel)
                 lin_j = convert(Int, get_lin_coeff(con.qe, var_id_j))
                 bilin_ij = convert(Int, get_quad_coeff(con.qe, var_id_i, var_id_j))
 
+                # by assumption bilinear terms are represented as 2qij
+                @assert mod(bilin_ij, 2) == 0
+
                 # mod 4: check if bilinear term 2qij has odd qij
-                if mod(bilin_ij, 4) >> 1 == 1
+                if mod(bilin_ij, 4) != 0
                     add_conj!(builder_mod4, var_id_i, var_id_j)
                 end
 
@@ -97,8 +119,8 @@ function get_parity_model(model::QPModel)
 
         # set rhs
         con_rhs = convert(Int, con.rhs)
-        con_rhs % 2 == 1 && negate!(builder_mod2)
-        (con_rhs % 4) >> 1 == 1 && negate!(builder_mod4)
+        mod(con_rhs, 2) == 1 && negate!(builder_mod2)
+        (mod(con_rhs, 4) >> 1) == 1 && negate!(builder_mod4)
 
         push!(con_builders, builder_mod2)
         !discard_mod_4 && push!(con_builders, builder_mod4)
@@ -130,6 +152,12 @@ function get_parity_model(model::QPModel)
 end
 
 
+"""
+    propagate!(model::ParityModel)
+
+Apply parity-specific propagation by splitting bipartite conjunctive
+constraints into two pure XOR constraints when possible.
+"""
 function propagate!(model::ParityModel)
     for (i, con) in enumerate(model.cons)
         bipartite_split = split_bipartite(con)
@@ -139,8 +167,18 @@ function propagate!(model::ParityModel)
             push!(model.cons, con2)
         end
     end
+    return
 end
 
+"""
+    gauss_jordan!(model::ParityModel; skip_conj=false) -> ParityModel
+
+Perform sparse Gauss-Jordan elimination over `GF(2)` on `model.cons`.
+
+At each step, the sparsest non-redundant row is selected as pivot. If
+`skip_conj=true`, rows containing conjunction terms are ignored and elimination
+is restricted to pure XOR constraints.
+"""
 function gauss_jordan!(model::ParityModel; skip_conj::Bool = false)
     pivots = [false for _ in 1:length(model.cons)]
     while true
@@ -167,7 +205,7 @@ function gauss_jordan!(model::ParityModel; skip_conj::Bool = false)
         end
         # no further pivot row found
         piv_row == 0 && break
-        
+
         piv_con = model.cons[piv_row]
         pivots[piv_row] = true
 
@@ -187,7 +225,7 @@ function gauss_jordan!(model::ParityModel; skip_conj::Bool = false)
             # skip xor-and cons if flag is set
             skip_conj && !con.is_pure_xor && continue
 
-            # skip redundant cons 
+            # skip redundant cons
             con.nnz == 0 && continue
 
             # pivot element is parity term
@@ -205,9 +243,10 @@ function gauss_jordan!(model::ParityModel; skip_conj::Bool = false)
 
     return model
 end
+
+
 """
 function apply_substitution!(model::XorAndModel, xor_row_idx::Int, pivot_col_idx::Int)
 
 end
 """
-

@@ -32,6 +32,17 @@ import QIPresolve.PresolvingCore as PC
     @test_throws ArgumentError PC.ParityPropagator(-1)
 end
 
+@testset "ParityModel initializes propagator with model variable order" begin
+    var_to_pos = Dict(10 => 1, 7 => 2, 42 => 3)
+    pos_to_var = [10, 7, 42]
+    model = PC.ParityModel(var_to_pos, pos_to_var, PC.XorConstraint[])
+
+    @test model.propagator.var_id_to_var_pos == var_to_pos
+    @test model.propagator.var_pos_to_var_id == pos_to_var
+    @test PC.lit_to_pos(model.propagator, 42, false) == 3
+    @test PC.pos_to_lit(model.propagator, 2) == (7, false)
+end
+
 @testset "Union-find helpers" begin
     prop = PC.ParityPropagator(3)
 

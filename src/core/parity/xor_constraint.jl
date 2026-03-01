@@ -2,7 +2,18 @@ const VarId = Int
 
 
 """
-struct for storing XOR constraints
+    XorConstraint
+
+Store one parity constraint over variable positions.
+
+The constraint is represented by:
+- `par`: linear XOR terms (`x_i`)
+- `conj`: pairwise XOR-AND terms (`x_i ∧ x_j`) as a symmetric bit matrix, or
+  `nothing` for pure XOR constraints
+- `rhs`: right-hand side parity bit
+
+Cached metadata (`conj_deg`, `nnz`, `is_pure_xor`, `has_changed`) is maintained
+by constructors and [`update!`](@ref).
 """
 mutable struct XorConstraint
     pos_to_var::Vector{VarId}
@@ -16,6 +27,14 @@ mutable struct XorConstraint
     has_changed::Bool
 end
 
+"""
+    XorConstraint(pos_to_var, var_to_pos, par, conj, rhs)
+
+Construct a mixed XOR-AND constraint.
+
+Computes per-column conjunction degrees (`conj_deg`) and the initial number of
+nonzeros (`nnz`), where each conjunctive term is counted once.
+"""
 function XorConstraint(pos_to_var::Vector{VarId}, var_to_pos::Dict{VarId, Int}, par::BitVector, conj::BitMatrix, rhs::Bool)
     n = size(conj, 2)
     conj_deg = Vector{Int}(undef, n)
@@ -29,20 +48,33 @@ function XorConstraint(pos_to_var::Vector{VarId}, var_to_pos::Dict{VarId, Int}, 
     return XorConstraint(pos_to_var, var_to_pos, par, conj, rhs, conj_deg, nnz, false, false)
 end
 
+"""
+    XorConstraint(pos_to_var, var_to_pos, par, rhs)
+
+Construct a pure XOR constraint with no conjunctive terms.
+"""
 function XorConstraint(pos_to_var::Vector{VarId}, var_to_pos::Dict{VarId, Int}, par::BitVector, rhs::Bool)
     nnz = count(par)
     return XorConstraint(pos_to_var, var_to_pos, par, nothing, rhs, nothing, nnz, true, false)
 end
 
+"""
+    update!(con::XorConstraint) -> Bool
+
+Refresh cached metadata of `con` after in-place edits.
+
+Recomputes conjunction degrees and `nnz`, drops the conjunction matrix if it
+becomes empty, and clears the `has_changed` flag.
+"""
 function update!(con::XorConstraint)
     conj_deg_sum = 0
-    if con.conj !== nothing 
+    if con.conj !== nothing
         @inbounds for i in eachindex(con.conj_deg)
             con.conj_deg[i] = count(@view con.conj[:, i])
         end
 
         for deg in con.conj_deg
-            @assert !(deg > 0 && con.is_pure_xor) 
+            @assert !(deg > 0 && con.is_pure_xor)
             conj_deg_sum += deg
         end
 
@@ -55,11 +87,17 @@ function update!(con::XorConstraint)
     end
 
     con.nnz = count(con.par) + conj_deg_sum ÷ 2
-    con.has_changed = false
+    return con.has_changed = false
 end
 
 """
-xor other onto con 
+    xor_con!(con::XorConstraint, other::XorConstraint; update=true) -> XorConstraint
+
+XOR `other` into `con` in place.
+
+This toggles linear terms, conjunctive terms (if present in both constraints),
+and the right-hand side bit. By default, cached metadata is recomputed via
+[`update!`](@ref).
 """
 function xor_con!(con::XorConstraint, other::XorConstraint; update::Bool = true)
     con.has_changed = true
@@ -75,7 +113,12 @@ function xor_con!(con::XorConstraint, other::XorConstraint; update::Bool = true)
 end
 
 """
-    neccessary conditions for constraint to be full bipartite allowing split
+    split_bipartite(con::XorConstraint) -> Union{Nothing,Tuple{XorConstraint,XorConstraint}}
+
+Detect whether `con` encodes a full bipartite conjunctive structure and split
+it into two pure XOR constraints.
+
+Returns `nothing` when splitting is not applicable.
 """
 function split_bipartite(con::XorConstraint)
 
@@ -85,7 +128,7 @@ function split_bipartite(con::XorConstraint)
     # constraint must be purely conjunctive
     (con.conj === nothing || con.is_pure_xor) && return nothing
     any(con.par) && return nothing
-    
+
     # degree scan: allow 0 (isolated) plus at most two positive degrees
     n = size(con.conj, 2)
     degree_1 = 0
@@ -148,15 +191,15 @@ function split_bipartite(con::XorConstraint)
 
     return con1, con2
 end
-            
-
-
-
 
 
 """
-Builder struct for constructing XOR-AND constraints
+    XorConstraintBuilder
 
+Builder for XOR/XOR-AND constraints in variable-id space.
+
+Terms are toggled modulo 2 in the internal dictionaries and materialized into
+bit-vectors/matrices by [`build`](@ref).
 """
 mutable struct XorConstraintBuilder
     par::Dict{VarId, Bool}
@@ -164,12 +207,27 @@ mutable struct XorConstraintBuilder
     rhs::Bool
 end
 
+"""
+    XorConstraintBuilder()
+
+Create an empty constraint builder with `rhs == false`.
+"""
 XorConstraintBuilder() = XorConstraintBuilder(Dict{VarId, Bool}(), Dict{Tuple{VarId, VarId}, Bool}(), false)
 
+"""
+    add_par!(builder::XorConstraintBuilder, var_id::VarId) -> Bool
+
+Toggle linear term `var_id` in `builder`.
+"""
 function add_par!(builder::XorConstraintBuilder, var_id::VarId)
     return builder.par[var_id] = !get(builder.par, var_id, false)
 end
 
+"""
+    add_conj!(builder::XorConstraintBuilder, var_id_1::VarId, var_id_2::VarId) -> Bool
+
+Toggle conjunctive term `(var_id_1, var_id_2)` in `builder`.
+"""
 function add_conj!(builder::XorConstraintBuilder, var_id_1::VarId, var_id_2::VarId)
     if var_id_1 > var_id_2
         var_id_1, var_id_2 = var_id_2, var_id_1
@@ -177,8 +235,19 @@ function add_conj!(builder::XorConstraintBuilder, var_id_1::VarId, var_id_2::Var
     return builder.conj[(var_id_1, var_id_2)] = !get(builder.conj, (var_id_1, var_id_2), false)
 end
 
+"""
+    negate!(builder::XorConstraintBuilder) -> Bool
+
+Toggle the builder right-hand side bit.
+"""
 negate!(builder::XorConstraintBuilder) = (builder.rhs ⊻= true)
 
+"""
+    build(builder::XorConstraintBuilder, nvars::Int, pos_to_var, var_to_pos) -> XorConstraint
+
+Materialize `builder` into an `XorConstraint` using the provided variable
+position mappings.
+"""
 function build(builder::XorConstraintBuilder, nvars::Int, pos_to_var::Vector{VarId}, var_to_pos::Dict{VarId, Int})
     par = falses(nvars)
     conj = falses(nvars, nvars)

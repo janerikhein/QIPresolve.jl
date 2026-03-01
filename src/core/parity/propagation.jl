@@ -39,39 +39,20 @@ mutable struct ParityPropagator
     parent_pos::Vector{Int}
 
     # Implication graph mappings
-    var_pos_to_node_idx::Dict{Int,Int}
+    var_pos_to_node_idx::Dict{Int, Int}
     node_idx_to_var_pos::Vector{Int}
     scc_graph::DiGraph
     sccs::Vector{SCCNode}
     requires_update::Bool
 end
 
-# Backward-compatible alias used by older parity model code.
-const ImpGraph = ParityPropagator
 
-"""
-    ParityPropagator(nvars::Int)
-
-Construct a parity propagator with `2*nvars` singleton literal SCCs.
-
-The created propagator has:
-- identity variable/literal mappings for `1:nvars`
-- an empty directed implication graph with `2*nvars` nodes
-- one `SCCNode` per literal
-- `requires_update == false`
-
-# Arguments
-- `nvars::Int`: Number of variables.
-
-# Throws
-- `ArgumentError`: If `nvars < 0`.
-"""
-function ParityPropagator(nvars::Int)
-    nvars >= 0 || throw(ArgumentError("nvars must be non-negative"))
+function _build_parity_propagator(
+    nvars::Int,
+    var_id_to_var_pos::Dict{VarId, Int},
+    var_pos_to_var_id::Vector{VarId},
+)
     nlits = 2 * nvars
-
-    var_pos_to_var_id = collect(1:nvars)
-    var_id_to_var_pos = Dict{VarId, Int}(vid => pos for (pos, vid) in enumerate(var_pos_to_var_id))
     parent_pos = collect(1:nlits)
 
     var_pos_to_node_idx = Dict{Int, Int}(pos => pos for pos in 1:nlits)
@@ -100,6 +81,60 @@ function ParityPropagator(nvars::Int)
         sccs,
         false,
     )
+end
+
+"""
+    ParityPropagator(nvars::Int)
+
+Construct a parity propagator with `2*nvars` singleton literal SCCs.
+
+The created propagator has:
+- identity variable/literal mappings for `1:nvars`
+- an empty directed implication graph with `2*nvars` nodes
+- one `SCCNode` per literal
+- `requires_update == false`
+
+# Arguments
+- `nvars::Int`: Number of variables.
+
+# Throws
+- `ArgumentError`: If `nvars < 0`.
+"""
+function ParityPropagator(nvars::Int)
+    nvars >= 0 || throw(ArgumentError("nvars must be non-negative"))
+
+    var_pos_to_var_id = collect(1:nvars)
+    var_id_to_var_pos = Dict{VarId, Int}(vid => pos for (pos, vid) in enumerate(var_pos_to_var_id))
+    return _build_parity_propagator(nvars, var_id_to_var_pos, var_pos_to_var_id)
+end
+
+"""
+    ParityPropagator(var_id_to_var_pos::Dict{VarId,Int}, var_pos_to_var_id::Vector{VarId})
+
+Construct a parity propagator with explicit variable-position mappings.
+
+This is useful when literal positions must match an existing parity model
+ordering.
+
+# Throws
+- `ArgumentError`: If mappings are inconsistent or not a bijection over `1:nvars`.
+"""
+function ParityPropagator(var_id_to_var_pos::Dict{VarId, Int}, var_pos_to_var_id::Vector{VarId})
+    nvars = length(var_pos_to_var_id)
+    length(var_id_to_var_pos) == nvars ||
+        throw(ArgumentError("var_id_to_var_pos and var_pos_to_var_id must have same length"))
+
+    seen_pos = falses(nvars)
+    for (vid, pos) in var_id_to_var_pos
+        1 <= pos <= nvars || throw(ArgumentError("invalid position $pos for variable $vid"))
+        var_pos_to_var_id[pos] == vid ||
+            throw(ArgumentError("mapping mismatch at position $pos: expected $(var_pos_to_var_id[pos]), got $vid"))
+        seen_pos[pos] && throw(ArgumentError("duplicate position $pos in var_id_to_var_pos"))
+        seen_pos[pos] = true
+    end
+    all(seen_pos) || throw(ArgumentError("var_id_to_var_pos must cover all positions 1:$nvars"))
+
+    return _build_parity_propagator(nvars, copy(var_id_to_var_pos), copy(var_pos_to_var_id))
 end
 
 """

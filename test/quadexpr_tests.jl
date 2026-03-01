@@ -71,18 +71,18 @@ end
     @test PC.quad(qe)[p10, p11] == 4.0
     @test PC.quad(qe)[p11, p10] == 0.0
     @test PC.get_quad_coeff(qe, 10, 11) == 4.0
-    @test PC.get_quad_coeff(qe, 11, 10) == 0.0
+    @test PC.get_quad_coeff(qe, 11, 10) == 4.0
     @test PC.get_quad_coeff(qe, 10, 12) == 0.0
 
     @test PC.add_quad_coeff!(qe, 10, 11, 1.5; sym = true) == true
     @test PC.quad(qe)[p10, p11] == 5.5
-    @test PC.quad(qe)[p11, p10] == 1.5
+    @test PC.quad(qe)[p11, p10] == 0.0
     @test PC.get_quad_coeff(qe, 10, 11) == 5.5
-    @test PC.get_quad_coeff(qe, 11, 10) == 1.5
+    @test PC.get_quad_coeff(qe, 11, 10) == 5.5
 
     @test PC.set_quad_coeff!(qe, 10, 11, 7.0; sym = true) == true
     @test PC.quad(qe)[p10, p11] == 7.0
-    @test PC.quad(qe)[p11, p10] == 7.0
+    @test PC.quad(qe)[p11, p10] == 0.0
 
     @test PC.set_quad_coeff!(qe, 10, 12, 1.0) == false
     @test PC.add_quad_coeff!(qe, 10, 12, 1.0) == false
@@ -170,7 +170,7 @@ end
     @test qe_last.perm[3] == perm_before[3]
     @test PC.get_lin_coeff(qe_last, 5) == 1.0
     @test PC.get_lin_coeff(qe_last, 6) == -2.0
-    @test PC.get_quad_coeff(qe_last, 5, 6) == 4.0
+    @test PC.get_quad_coeff(qe_last, 5, 6) == 1.5
     @test PC.get_quad_coeff(qe_last, 6, 5) == 1.5
     @test PC.get_lin_coeff(qe_last, 7) == 0.0
 
@@ -209,7 +209,7 @@ end
     @test qe_noclear.quad_buf[phys3, phys2] == q32
     @test PC.get_lin_coeff(qe_noclear, 1) == 1.0
     @test PC.get_lin_coeff(qe_noclear, 3) == 3.0
-    @test PC.get_quad_coeff(qe_noclear, 1, 3) == 8.0
+    @test PC.get_quad_coeff(qe_noclear, 1, 3) == 9.0
     @test PC.get_quad_coeff(qe_noclear, 3, 1) == 9.0
 end
 

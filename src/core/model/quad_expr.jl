@@ -162,7 +162,11 @@ function QuadExpr(
         pos2 = qe.var_to_pos[id2]
         i = qe.perm[pos1]
         j = qe.perm[pos2]
-        @inbounds qe.quad_buf[i, j] += coef
+        if i <= j
+            @inbounds qe.quad_buf[i, j] += coef
+        else
+            @inbounds qe.quad_buf[j, i] += coef
+        end
     end
 
     # insert linear terms
@@ -277,10 +281,6 @@ Return the quadratic coefficient for variables `id1` and `id2`.
 If either variable is not present in the expression, returns `0.0`.
 """
 @inline function get_quad_coeff(qe::QuadExpr, id1::VarId, id2::VarId)
-    if id2 < id1
-        id1, id2 = id2, id1
-    end
-
     pos1 = var_pos(qe, id1)
     pos1 == 0 && return 0.0
     pos2 = var_pos(qe, id2)
@@ -288,7 +288,11 @@ If either variable is not present in the expression, returns `0.0`.
 
     i = qe.perm[pos1]
     j = qe.perm[pos2]
-    @inbounds return qe.quad_buf[i, j]
+    if i <= j
+        @inbounds return qe.quad_buf[i, j]
+    else
+        @inbounds return qe.quad_buf[j, i]
+    end
 end
 
 """
@@ -349,8 +353,9 @@ Set the quadratic coefficient for variables `id1` and `id2` to `val`.
 Returns `true` if both variables exist in the expression, otherwise returns `false`
 (and does not modify the expression).
 
-Note: Updates `quad_buf` at the permuted physical indices. Does NOT automatically
-mirror (i,j) to (j,i); set sym=true if you want that behavior. 
+Note: Coefficients are stored canonically in the upper triangle of `quad_buf`
+(by physical buffer index). Lower-triangular entries are forced to zero.
+The `sym` keyword is accepted for compatibility but has no effect.
 """
 function set_quad_coeff!(qe::QuadExpr, id1::VarId, id2::VarId, val::Float64; sym::Bool = false)
     pos1 = var_pos(qe, id1)
@@ -361,8 +366,13 @@ function set_quad_coeff!(qe::QuadExpr, id1::VarId, id2::VarId, val::Float64; sym
     i = qe.perm[pos1]  # physical
     j = qe.perm[pos2]  # physical
 
-    @inbounds qe.quad_buf[i, j] = val
-    sym && @inbounds qe.quad_buf[j, i] = val
+    if i <= j
+        @inbounds qe.quad_buf[i, j] = val
+        i != j && (@inbounds qe.quad_buf[j, i] = 0.0)
+    else
+        @inbounds qe.quad_buf[j, i] = val
+        @inbounds qe.quad_buf[i, j] = 0.0
+    end
     return true
 end
 
@@ -374,8 +384,9 @@ Set the quadratic coefficient for variables `id1` and `id2` to `val`.
 Returns `true` if both variables exist in the expression, otherwise returns `false`
 (and does not modify the expression).
 
-Note: Updates `quad_buf` at the permuted physical indices. Does NOT automatically
-mirror (i,j) to (j,i); set sym=true if you want that behavior. 
+Note: Coefficients are stored canonically in the upper triangle of `quad_buf`
+(by physical buffer index). Lower-triangular entries are forced to zero.
+The `sym` keyword is accepted for compatibility but has no effect.
 """
 function add_quad_coeff!(qe::QuadExpr, id1::VarId, id2::VarId, delta::Float64; sym::Bool = false)
     pos1 = var_pos(qe, id1)
@@ -386,8 +397,13 @@ function add_quad_coeff!(qe::QuadExpr, id1::VarId, id2::VarId, delta::Float64; s
     i = qe.perm[pos1]  # physical
     j = qe.perm[pos2]  # physical
 
-    @inbounds qe.quad_buf[i, j] += delta
-    sym && @inbounds qe.quad_buf[j, i] += delta
+    if i <= j
+        @inbounds qe.quad_buf[i, j] += delta
+        i != j && (@inbounds qe.quad_buf[j, i] = 0.0)
+    else
+        @inbounds qe.quad_buf[j, i] += delta
+        @inbounds qe.quad_buf[i, j] = 0.0
+    end
     return true
 end
 
@@ -440,7 +456,6 @@ function remove_var!(qe::QuadExpr, id::VarId; clear_buf::Bool = true)
 end
 
 function normalize!(qe::QuadExpr)
-    #TODO: check if vars are in the constraint for which their corresponding row/column and lin coeff are all zero. in that case remove that var
     for pos in reverse(1:qe.nvars)
         phys_pos = qe.perm[pos]
 
@@ -449,7 +464,12 @@ function normalize!(qe::QuadExpr)
         all_zero = true
         for other_pos in 1:qe.nvars
             phys_other = qe.perm[other_pos]
-            if qe.quad_buf[phys_pos, phys_other] != 0 || qe.quad_buf[phys_other, phys_pos] != 0
+            q = if phys_pos <= phys_other
+                @inbounds qe.quad_buf[phys_pos, phys_other]
+            else
+                @inbounds qe.quad_buf[phys_other, phys_pos]
+            end
+            if q != 0
                 all_zero = false
                 break
             end
@@ -578,8 +598,7 @@ for the quadratic expression represented by `qe`:
 
 Notes
 - This updates `quad_buf`, `lin_buf`, and `constant` in-place.
-- Assumes your expression uses the *full* `quad_buf` (i.e., Q need not be symmetric,
-  and both Q[i,j] and Q[j,i] contribute if both are nonzero).
+- Assumes canonical upper-triangular quadratic storage.
 - No allocations; does not create any views.
 - If `invert=true`, applies the inverse transform for the provided `(scale, offset)`.
 """
@@ -608,13 +627,21 @@ function affine_transform!(qe::QuadExpr, var_id::VarId, scale::Float64, offset::
             pj = qe.perm[posj]
             pj == pk && continue
 
-            qkj = qe.quad_buf[pk, pj]
-            qjk = qe.quad_buf[pj, pk]
+            qkj = if pk <= pj
+                @inbounds qe.quad_buf[pk, pj]
+            else
+                @inbounds qe.quad_buf[pj, pk]
+            end
 
-            if qkj != 0.0 || qjk != 0.0
-                qe.lin_buf[pj] += offset * (qkj + qjk)
-                qe.quad_buf[pk, pj] = scale * qkj
-                qe.quad_buf[pj, pk] = scale * qjk
+            if qkj != 0.0
+                qe.lin_buf[pj] += offset * qkj
+                if pk <= pj
+                    @inbounds qe.quad_buf[pk, pj] = scale * qkj
+                    pk != pj && (@inbounds qe.quad_buf[pj, pk] = 0.0)
+                else
+                    @inbounds qe.quad_buf[pj, pk] = scale * qkj
+                    @inbounds qe.quad_buf[pk, pj] = 0.0
+                end
             end
         end
 
@@ -658,13 +685,13 @@ in the quadratic expression
 
     ∑_{i,j} Q[i,j] x_i x_j + ∑_i c[i] x_i + constant
 
-stored in `qe` (full `Q`, not the 1/2 x'Qx convention).
+stored in `qe`.
 
 Notes
 - Updates `quad_buf` and `lin_buf` in-place (no allocations, no views).
 - `other_id` (the "y") is not otherwise changed; only `var_id` is substituted.
 - If `invert=true`, applies the inverse transform for the provided `(a, b)`.
-- If you use the symmetric 1/2 x'Qx convention, the formulas differ.
+- Coefficients are stored canonically in the upper triangle of `quad_buf`.
 """
 function lin_transform!(
         qe::QuadExpr,
@@ -694,8 +721,11 @@ function lin_transform!(
         cm = qe.lin_buf[pm]
 
         qkk = qe.quad_buf[pk, pk]
-        qkm = qe.quad_buf[pk, pm]
-        qmk = qe.quad_buf[pm, pk]
+        qkm = if pk <= pm
+            @inbounds qe.quad_buf[pk, pm]
+        else
+            @inbounds qe.quad_buf[pm, pk]
+        end
         qmm = qe.quad_buf[pm, pm]
 
         # Linear terms
@@ -704,25 +734,51 @@ function lin_transform!(
 
         # Quadratic terms among {k,m}
         qe.quad_buf[pk, pk] = (a * a) * qkk
-        qe.quad_buf[pk, pm] = a * qkm + (a * b) * qkk
-        qe.quad_buf[pm, pk] = a * qmk + (a * b) * qkk
-        qe.quad_buf[pm, pm] = qmm + b * (qkm + qmk) + (b * b) * qkk
+        qkmpm = a * qkm + (2.0 * a * b) * qkk
+        if pk <= pm
+            @inbounds qe.quad_buf[pk, pm] = qkmpm
+            pk != pm && (@inbounds qe.quad_buf[pm, pk] = 0.0)
+        else
+            @inbounds qe.quad_buf[pm, pk] = qkmpm
+            @inbounds qe.quad_buf[pk, pm] = 0.0
+        end
+        qe.quad_buf[pm, pm] = qmm + b * qkm + (b * b) * qkk
 
         # Interactions with all other vars j ≠ k,m
         for posj in 1:qe.nvars
             pj = qe.perm[posj]
             (pj == pk || pj == pm) && continue
 
-            qkj_old = qe.quad_buf[pk, pj]
-            qjk_old = qe.quad_buf[pj, pk]
+            qkj_old = if pk <= pj
+                @inbounds qe.quad_buf[pk, pj]
+            else
+                @inbounds qe.quad_buf[pj, pk]
+            end
 
             if qkj_old != 0.0
-                qe.quad_buf[pm, pj] += b * qkj_old
-                qe.quad_buf[pk, pj] = a * qkj_old
-            end^
-                if qjk_old != 0.0
-                qe.quad_buf[pj, pm] += b * qjk_old
-                qe.quad_buf[pj, pk] = a * qjk_old
+                qmj_old = if pm <= pj
+                    @inbounds qe.quad_buf[pm, pj]
+                else
+                    @inbounds qe.quad_buf[pj, pm]
+                end
+
+                qmj_new = qmj_old + b * qkj_old
+                if pm <= pj
+                    @inbounds qe.quad_buf[pm, pj] = qmj_new
+                    pm != pj && (@inbounds qe.quad_buf[pj, pm] = 0.0)
+                else
+                    @inbounds qe.quad_buf[pj, pm] = qmj_new
+                    @inbounds qe.quad_buf[pm, pj] = 0.0
+                end
+
+                qkj_new = a * qkj_old
+                if pk <= pj
+                    @inbounds qe.quad_buf[pk, pj] = qkj_new
+                    pk != pj && (@inbounds qe.quad_buf[pj, pk] = 0.0)
+                else
+                    @inbounds qe.quad_buf[pj, pk] = qkj_new
+                    @inbounds qe.quad_buf[pk, pj] = 0.0
+                end
             end
         end
     end
@@ -731,13 +787,28 @@ function lin_transform!(
 end
 
 function scale_transform!(qe::QuadExpr, scale::Float64)
-    for posj in 1:qe.nvars
-        for posi in 1:qe.nvars
-            qe.quad_buf[posi, posj] *= scale
+    for posi in 1:qe.nvars
+        pi = qe.perm[posi]
+        for posj in posi:qe.nvars
+            pj = qe.perm[posj]
+            q = if pi <= pj
+                @inbounds qe.quad_buf[pi, pj]
+            else
+                @inbounds qe.quad_buf[pj, pi]
+            end
+            qscaled = scale * q
+            if pi <= pj
+                @inbounds qe.quad_buf[pi, pj] = qscaled
+                pi != pj && (@inbounds qe.quad_buf[pj, pi] = 0.0)
+            else
+                @inbounds qe.quad_buf[pj, pi] = qscaled
+                @inbounds qe.quad_buf[pi, pj] = 0.0
+            end
         end
     end
     for pos in 1:qe.nvars
-        qe.lin_buf[pos] *= scale
+        i = qe.perm[pos]
+        qe.lin_buf[i] *= scale
     end
 
     return qe
