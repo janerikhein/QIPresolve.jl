@@ -39,7 +39,7 @@ function add_quad!(expr::QuadExprBuilder, id1::VarId, id2::VarId, val::Float64)
     return expr.quad[(id1, id2)] = get(expr.quad, (id1, id2), 0) + val
 end
 
-#TODO: modify this function to work with the current implementation of QuadExpr
+
 function build(builder::QuadExprBuilder)
     quad_terms = Vector{Tuple{Float64, VarId, VarId}}()
     sizehint!(quad_terms, length(builder.quad))

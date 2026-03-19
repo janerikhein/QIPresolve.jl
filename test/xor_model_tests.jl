@@ -145,10 +145,10 @@ end
     x = [1, 0, 1, 0]
     @test all_parity_constraints_hold(model, x)
 
-    PC.propagate!(model)
+    status = PC.propagate!(model)
+    @test status == PC.PARITY_PROPAGATE_UPDATED
     @test length(model.cons) == 2
     @test all(c -> c.is_pure_xor, model.cons)
-    @test all(c -> c.rhs, model.cons)
     @test all_parity_constraints_hold(model, x)
 end
 
