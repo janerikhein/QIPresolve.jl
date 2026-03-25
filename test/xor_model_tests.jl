@@ -21,21 +21,21 @@ function count_conj_terms(con::PC.XorConstraint)
     return total
 end
 
-function parity_constraint_holds(con::PC.XorConstraint, x::Vector{Int})
+function parity_constraint_holds(con::PC.XorConstraint, pos_to_var::Vector{PC.VarId}, x::Vector{Int})
     lhs = false
-    n = length(con.pos_to_var)
+    n = length(con.par)
 
     for pos in 1:n
         con.par[pos] || continue
-        lhs = xor(lhs, isodd(x[con.pos_to_var[pos]]))
+        lhs = xor(lhs, isodd(x[pos_to_var[pos]]))
     end
 
     if con.conj !== nothing
         for i in 1:n
-            xi_odd = isodd(x[con.pos_to_var[i]])
+            xi_odd = isodd(x[pos_to_var[i]])
             for j in (i + 1):n
                 con.conj[i, j] || continue
-                lhs = xor(lhs, xi_odd && isodd(x[con.pos_to_var[j]]))
+                lhs = xor(lhs, xi_odd && isodd(x[pos_to_var[j]]))
             end
         end
     end
@@ -45,7 +45,7 @@ end
 
 function all_parity_constraints_hold(model::PC.ParityModel, x::Vector{Int})
     for con in model.cons
-        parity_constraint_holds(con, x) || return false
+        parity_constraint_holds(con, model.pos_to_var_id, x) || return false
     end
     return true
 end
@@ -115,8 +115,8 @@ end
     @test length(parity_model.cons) == 2
     @test Set(parity_model.pos_to_var_id) == Set([1, 2])
 
-    pure = [c for c in parity_model.cons if c.is_pure_xor]
-    mixed = [c for c in parity_model.cons if !c.is_pure_xor]
+    pure = [c for c in parity_model.cons if c.meta.is_pure_xor]
+    mixed = [c for c in parity_model.cons if !c.meta.is_pure_xor]
     @test length(pure) == 1
     @test length(mixed) == 1
 
@@ -139,7 +139,7 @@ end
         conj[j, i] = true
     end
 
-    con = PC.XorConstraint(pos_to_var, var_to_pos, falses(4), conj, true)
+    con = PC.XorConstraint(falses(4), conj, true)
     model = PC.ParityModel(var_to_pos, pos_to_var, [con])
 
     x = [1, 0, 1, 0]
@@ -148,7 +148,7 @@ end
     status = PC.propagate!(model)
     @test status == PC.PARITY_PROPAGATE_UPDATED
     @test length(model.cons) == 2
-    @test all(c -> c.is_pure_xor, model.cons)
+    @test all(c -> c.meta.is_pure_xor, model.cons)
     @test all_parity_constraints_hold(model, x)
 end
 
@@ -156,9 +156,9 @@ end
     pos_to_var = [1, 2, 3]
     var_to_pos = Dict(vid => pos for (pos, vid) in enumerate(pos_to_var))
     cons = PC.XorConstraint[
-        PC.XorConstraint(pos_to_var, var_to_pos, BitVector([1, 1, 1]), true),
-        PC.XorConstraint(pos_to_var, var_to_pos, BitVector([1, 1, 0]), false),
-        PC.XorConstraint(pos_to_var, var_to_pos, BitVector([0, 1, 1]), true),
+        PC.XorConstraint(BitVector([1, 1, 1]), true),
+        PC.XorConstraint(BitVector([1, 1, 0]), false),
+        PC.XorConstraint(BitVector([0, 1, 1]), true),
     ]
     model = PC.ParityModel(var_to_pos, pos_to_var, cons)
     x = [0, 0, 1]
@@ -173,8 +173,8 @@ end
     conj[1, 2] = true
     conj[2, 1] = true
     model2 = PC.ParityModel(var_to_pos2, pos_to_var2, PC.XorConstraint[
-        PC.XorConstraint(pos_to_var2, var_to_pos2, BitVector([1, 0]), true),
-        PC.XorConstraint(pos_to_var2, var_to_pos2, falses(2), conj, false),
+        PC.XorConstraint(BitVector([1, 0]), true),
+        PC.XorConstraint(falses(2), conj, false),
     ])
     x2 = [1, 0]
 
