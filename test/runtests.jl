@@ -7,4 +7,5 @@ using Test
     include("propagation_tests.jl")
     include("xor_constraint_tests.jl")
     include("xor_model_tests.jl")
+    include("presolve_parity_tests.jl")
 end

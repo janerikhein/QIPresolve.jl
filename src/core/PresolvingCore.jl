@@ -9,6 +9,7 @@ include("model/qp_model.jl")
 include("parity/xor_constraint.jl")
 include("parity/propagation.jl")
 include("parity/xor_model.jl")
+include("parity/presolve_parity.jl")
 
 include("utils.jl")
 
@@ -17,10 +18,7 @@ export
     QuadExpr,
     IntVar,
     Constraint,
-    QPModel,
-
-    # Parity reductions
-    get_parity_model
+    QPModel
 
 
 end # module

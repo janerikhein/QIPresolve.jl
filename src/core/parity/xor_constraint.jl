@@ -163,7 +163,117 @@ function split_bipartite(con::XorConstraint)
     return con1, con2
 end
 
+"""
+Performs substitution x[var_idx] <- x[subst_idx] ⊻ neg.
 
+Assumes:
+- con.conj is symmetric
+- con.conj[i, i] == false on entry
+- var_idx != subst_idx
+"""
+function substitute_var!(con::XorConstraint, var_idx::Int, subst_idx::Int, neg::Bool)
+    @assert var_idx != subst_idx
+    @assert con.conj !== nothing
+
+    old_par = con.par[var_idx]
+    conj = con.conj::BitMatrix
+
+    conj_var = view(conj, :, var_idx)
+    conj_subst = view(conj, :, subst_idx)
+
+    # linear term: old_par * x_var -> old_par * (x_subst ⊻ neg)
+    con.par[subst_idx] ⊻= old_par
+    con.rhs ⊻= (old_par & neg)
+    con.par[var_idx] = false
+
+    # quadratic terms involving var_idx:
+    # (x_var ∧ x_k) -> (x_subst ∧ x_k) ⊻ (neg ∧ x_k)
+    conj_subst .⊻= conj_var
+
+    if neg
+        con.par .⊻= conj_var
+    end
+
+    # restore symmetry from updated subst column
+    conj[subst_idx, :] .= conj_subst
+
+    # remove var_idx completely
+    conj_var .= false
+    conj[var_idx, :] .= false
+
+    # reduce diagonal: x_j ∧ x_j = x_j
+    if conj[subst_idx, subst_idx]
+        con.par[subst_idx] ⊻= true
+        conj[subst_idx, subst_idx] = false
+    end
+
+    con.meta.requires_update = true
+    con.meta.requires_prop = true
+
+    return con
+end
+
+
+"""
+Performs substitution
+
+    x[var_idx] <- (⊻_{j : subst_mask[j]} x[j]) ⊻ neg
+
+Assumes:
+- con.conj is symmetric
+- con.conj[i, i] == false on entry for all i
+- subst_mask[var_idx] == false
+"""
+function substitute_var!(
+    con::XorConstraint,
+    var_idx::Int,
+    subst_mask::BitVector,
+    neg::Bool,
+)
+    @assert 1 <= var_idx <= length(con.par)
+    @assert length(subst_mask) == length(con.par)
+    @assert !subst_mask[var_idx]
+    @assert con.conj !== nothing
+
+    old_par = con.par[var_idx]
+    conj = con.conj::BitMatrix
+    subst_indices = findall(subst_mask)
+    neighbor_indices = findall(@view conj[:, var_idx])
+
+    # linear term:
+    # old_par * x_i -> old_par * ((xor-sum over subst vars) ⊻ neg)
+    if old_par
+        con.par .⊻= subst_mask
+        con.rhs ⊻= neg
+    end
+    con.par[var_idx] = false
+
+    # quadratic terms:
+    # (x_i ∧ x_k) -> ((xor-sum over subst vars) ∧ x_k) ⊻ (neg ∧ x_k)
+    for k in neighbor_indices
+        if neg
+            con.par[k] ⊻= true
+        end
+
+        for j in subst_indices
+            if j == k
+                con.par[j] ⊻= true
+            else
+                conj[j, k] ⊻= true
+                conj[k, j] = conj[j, k]
+            end
+        end
+    end
+
+    # remove var_idx completely
+    conj[:, var_idx] .= false
+    conj[var_idx, :] .= false
+
+    con.meta.requires_update = true
+    con.meta.requires_prop = true
+
+    return con
+end
 
 """
     XorConstraintBuilder
@@ -220,7 +330,7 @@ negate!(builder::XorConstraintBuilder) = (builder.rhs ⊻= true)
 Materialize `builder` into an `XorConstraint` using the provided variable
 position mappings.
 """
-function build(builder::XorConstraintBuilder, nvars::Int, pos_to_var::Vector{VarId}, var_to_pos::Dict{VarId, Int})
+function build(builder::XorConstraintBuilder, nvars::Int, var_to_pos::Dict{VarId, Int})
     par = falses(nvars)
     conj = falses(nvars, nvars)
     is_pure_xor = true
@@ -242,4 +352,13 @@ function build(builder::XorConstraintBuilder, nvars::Int, pos_to_var::Vector{Var
     end
 
     return con
+end
+
+function build(
+    builder::XorConstraintBuilder,
+    nvars::Int,
+    pos_to_var,
+    var_to_pos::Dict{VarId, Int},
+)
+    return build(builder, nvars, var_to_pos)
 end

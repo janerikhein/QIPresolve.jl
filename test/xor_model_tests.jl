@@ -1,211 +1,299 @@
 using Test
-using Random
 import QIPresolve.PresolvingCore as PC
 
-const XorModelQuadTerm = Tuple{Float64, PC.VarId, PC.VarId}
-const XorModelLinTerm = Tuple{Float64, PC.VarId}
-
-function empty_objective()
-    return PC.QuadExpr(XorModelQuadTerm[], XorModelLinTerm[]; constant = 0.0)
+function parity_identity_maps(n::Int)
+    pos_to_var = collect(1:n)
+    var_to_pos = Dict(i => i for i in 1:n)
+    return pos_to_var, var_to_pos
 end
 
-function count_conj_terms(con::PC.XorConstraint)
-    con.conj === nothing && return 0
-    n = size(con.conj, 1)
-    total = 0
-    for i in 1:n
-        for j in (i + 1):n
-            con.conj[i, j] && (total += 1)
-        end
+function parity_symmetric_bitmatrix(n::Int, edges::Vector{Tuple{Int, Int}})
+    mat = falses(n, n)
+    for (i, j) in edges
+        mat[i, j] = true
+        mat[j, i] = true
     end
-    return total
+    return mat
 end
 
-function parity_constraint_holds(con::PC.XorConstraint, pos_to_var::Vector{PC.VarId}, x::Vector{Int})
-    lhs = false
-    n = length(con.par)
+@testset "gauss_jordan_xor! only pivots and eliminates pure XOR rows" begin
+    pos_to_var, var_to_pos = parity_identity_maps(3)
+    xor1 = PC.XorConstraint(BitVector([1, 1, 0]), false)
+    xor2 = PC.XorConstraint(BitVector([1, 0, 1]), true)
+    xor_and = PC.XorConstraint(
+        BitVector([1, 0, 0]),
+        parity_symmetric_bitmatrix(3, [(2, 3)]),
+        true,
+    )
 
-    for pos in 1:n
-        con.par[pos] || continue
-        lhs = xor(lhs, isodd(x[pos_to_var[pos]]))
-    end
+    model = PC.ParityModel(var_to_pos, pos_to_var, [xor1, xor2, deepcopy(xor_and)])
+    PC.gauss_jordan_xor!(model)
 
-    if con.conj !== nothing
-        for i in 1:n
-            xi_odd = isodd(x[pos_to_var[i]])
-            for j in (i + 1):n
-                con.conj[i, j] || continue
-                lhs = xor(lhs, xi_odd && isodd(x[pos_to_var[j]]))
-            end
-        end
-    end
+    @test model.pivots[1] == (1, nothing)
+    @test model.pivots[2] == (2, nothing)
+    @test model.pivots[3] === nothing
 
-    return lhs == con.rhs
+    @test model.cons[1].par == BitVector([1, 0, 1])
+    @test model.cons[1].rhs
+    @test model.cons[2].par == BitVector([0, 1, 1])
+    @test model.cons[2].rhs
+    @test model.cons[3].par == xor_and.par
+    @test model.cons[3].conj == xor_and.conj
+    @test model.cons[3].rhs == xor_and.rhs
 end
 
-function all_parity_constraints_hold(model::PC.ParityModel, x::Vector{Int})
-    for con in model.cons
-        parity_constraint_holds(con, model.pos_to_var_id, x) || return false
-    end
-    return true
+@testset "gauss_jordan_xor_and! only pivots and eliminates XOR-AND rows" begin
+    pos_to_var, var_to_pos = parity_identity_maps(4)
+    xor_con = PC.XorConstraint(BitVector([1, 1, 0, 0]), false)
+    xor_and1 = PC.XorConstraint(
+        BitVector([1, 0, 0, 0]),
+        parity_symmetric_bitmatrix(4, [(1, 2)]),
+        false,
+    )
+    xor_and2 = PC.XorConstraint(
+        BitVector([0, 1, 0, 0]),
+        parity_symmetric_bitmatrix(4, [(1, 2), (2, 3)]),
+        true,
+    )
+
+    model = PC.ParityModel(var_to_pos, pos_to_var, [deepcopy(xor_con), xor_and1, xor_and2])
+    PC.gauss_jordan_xor_and!(model)
+
+    @test model.pivots[1] === nothing
+    @test model.pivots[2] == (2, 1)
+    @test model.pivots[3] == (3, 2)
+
+    @test model.cons[1].par == xor_con.par
+    @test model.cons[1].rhs == xor_con.rhs
+    @test model.cons[2].conj == parity_symmetric_bitmatrix(4, [(1, 2)])
+    @test model.cons[3].conj == parity_symmetric_bitmatrix(4, [(2, 3)])
+    @test model.cons[3].par == BitVector([1, 1, 0, 0])
+    @test model.cons[3].rhs
 end
 
-function refresh_constraint_cache!(model::PC.ParityModel)
-    for con in model.cons
-        PC.update!(con)
-    end
-    return model
+@testset "substitute_parity_pivots! clears stored parity pivots from non-owner rows" begin
+    pos_to_var, var_to_pos = parity_identity_maps(4)
+    xor_pivot = PC.XorConstraint(BitVector([1, 1, 0, 0]), false)
+    xor_and_pivot = PC.XorConstraint(
+        BitVector([1, 0, 0, 0]),
+        parity_symmetric_bitmatrix(4, [(2, 3)]),
+        false,
+    )
+    xor_unpivoted = PC.XorConstraint(BitVector([1, 0, 1, 0]), true)
+    xor_and_unpivoted = PC.XorConstraint(
+        BitVector([1, 0, 0, 0]),
+        parity_symmetric_bitmatrix(4, [(3, 4)]),
+        true,
+    )
+
+    model = PC.ParityModel(
+        var_to_pos,
+        pos_to_var,
+        [xor_pivot, xor_and_pivot, xor_unpivoted, xor_and_unpivoted],
+    )
+    model.pivots[1] = (1, nothing)
+    model.pivots[2] = (2, 3)
+
+    PC.substitute_parity_pivots!(model)
+
+    @test model.cons[2].par == BitVector([0, 1, 0, 0])
+    @test model.cons[2].conj == parity_symmetric_bitmatrix(4, [(2, 3)])
+    @test !model.cons[2].rhs
+
+    @test model.cons[3].par == BitVector([0, 1, 1, 0])
+    @test model.cons[3].rhs
+
+    @test model.cons[4].par == BitVector([0, 1, 0, 0])
+    @test model.cons[4].conj == parity_symmetric_bitmatrix(4, [(3, 4)])
+    @test model.cons[4].rhs
 end
 
-function random_equality_model_with_solution(rng::AbstractRNG, nvars::Int, ncons::Int)
-    vars = Dict{PC.VarId, PC.IntVar}()
-    x = zeros(Int, nvars)
+@testset "substitute_parity_pivots! asserts on same-type pivot rows retaining a parity pivot" begin
+    pos_to_var, var_to_pos = parity_identity_maps(3)
+    xor_pivot1 = PC.XorConstraint(BitVector([1, 1, 0]), false)
+    xor_pivot2 = PC.XorConstraint(BitVector([1, 0, 1]), true)
 
-    for vid in 1:nvars
-        if rand(rng) < 0.5
-            vars[vid] = PC.IntVar(0.0, 1.0)
-            x[vid] = rand(rng, 0:1)
-        else
-            lb = rand(rng, -3:0)
-            ub = rand(rng, 1:4)
-            vars[vid] = PC.IntVar(lb, ub)
-            x[vid] = rand(rng, lb:ub)
-        end
-    end
+    model = PC.ParityModel(var_to_pos, pos_to_var, [xor_pivot1, xor_pivot2])
+    model.pivots[1] = (1, nothing)
+    model.pivots[2] = (3, nothing)
 
-    cons = Vector{PC.Constraint}(undef, ncons)
-    for cid in 1:ncons
-        quad_terms = XorModelQuadTerm[]
-        lin_terms = XorModelLinTerm[]
-
-        for i in 1:nvars
-            diag = rand(rng, -6:6)
-            diag == 0 || push!(quad_terms, (diag, i, i))
-
-            lin = rand(rng, -6:6)
-            lin == 0 || push!(lin_terms, (lin, i))
-
-            for j in (i + 1):nvars
-                qij = rand(rng, -8:2:8)
-                qij == 0 || push!(quad_terms, (qij, i, j))
-            end
-        end
-
-        if isempty(quad_terms) && isempty(lin_terms)
-            vid = rand(rng, 1:nvars)
-            push!(lin_terms, (1.0, vid))
-        end
-
-        qe = PC.QuadExpr(quad_terms, lin_terms; constant = 0.0)
-        rhs = PC.eval_full(qe, x)
-        cons[cid] = PC.Constraint(cid, qe, rhs, rhs)
-    end
-
-    model = PC.QPModel(vars, cons, empty_objective(), :min)
-    return model, x
+    @test_throws AssertionError PC.substitute_parity_pivots!(model)
 end
 
-@testset "get_parity_model basic extraction" begin
-    vars = Dict{PC.VarId, PC.IntVar}(1 => PC.IntVar(0.0, 1.0), 2 => PC.IntVar(0.0, 1.0))
-    qe = PC.QuadExpr(XorModelQuadTerm[], XorModelLinTerm[(1.0, 1), (1.0, 2)])
-    con = PC.Constraint(1, qe, 1.0, 1.0)
-    model = PC.QPModel(vars, [con], empty_objective(), :min)
+@testset "substitute_parity_pivots! ignores conjunctive pivot owners" begin
+    pos_to_var, var_to_pos = parity_identity_maps(3)
+    xor_and_pivot = PC.XorConstraint(
+        BitVector([1, 0, 0]),
+        parity_symmetric_bitmatrix(3, [(1, 2)]),
+        false,
+    )
+    xor_row = PC.XorConstraint(BitVector([1, 1, 0]), true)
 
-    parity_model = PC.get_parity_model(model)
-    @test length(parity_model.cons) == 2
-    @test Set(parity_model.pos_to_var_id) == Set([1, 2])
+    model = PC.ParityModel(var_to_pos, pos_to_var, [deepcopy(xor_and_pivot), deepcopy(xor_row)])
+    model.pivots[1] = (1, 2)
 
-    pure = [c for c in parity_model.cons if c.meta.is_pure_xor]
-    mixed = [c for c in parity_model.cons if !c.meta.is_pure_xor]
-    @test length(pure) == 1
-    @test length(mixed) == 1
+    PC.substitute_parity_pivots!(model)
 
-    @test count(pure[1].par) == 2
-    @test pure[1].rhs
-    @test count(mixed[1].par) == 0
-    @test !mixed[1].rhs
-    @test count_conj_terms(mixed[1]) == 1
-
-    x = [1, 0]
-    @test all_parity_constraints_hold(parity_model, x)
+    @test model.cons[1].par == xor_and_pivot.par
+    @test model.cons[1].conj == xor_and_pivot.conj
+    @test model.cons[1].rhs == xor_and_pivot.rhs
+    @test model.cons[2].par == xor_row.par
+    @test model.cons[2].rhs == xor_row.rhs
 end
 
-@testset "propagate! splits full-bipartite conjunction rows" begin
-    pos_to_var = [1, 2, 3, 4]
-    var_to_pos = Dict(vid => pos for (pos, vid) in enumerate(pos_to_var))
-    conj = falses(4, 4)
-    for (i, j) in ((1, 3), (1, 4), (2, 3), (2, 4))
-        conj[i, j] = true
-        conj[j, i] = true
-    end
+@testset "reformulate_bipartite_cons! splits bipartite rows and resets their pivots" begin
+    pos_to_var, var_to_pos = parity_identity_maps(5)
+    bipartite = PC.XorConstraint(
+        falses(5),
+        parity_symmetric_bitmatrix(5, [(1, 3), (1, 4), (2, 3), (2, 4)]),
+        true,
+    )
+    unsplittable = PC.XorConstraint(
+        BitVector([1, 0, 0, 0, 1]),
+        false,
+    )
+    untouched = PC.XorConstraint(
+        BitVector([0, 1, 0, 1, 0]),
+        false,
+    )
 
-    con = PC.XorConstraint(falses(4), conj, true)
-    model = PC.ParityModel(var_to_pos, pos_to_var, [con])
+    model = PC.ParityModel(var_to_pos, pos_to_var, [unsplittable, bipartite, untouched])
+    model.pivots[1] = (1, nothing)
+    model.pivots[2] = (3, 1)
+    model.pivots[3] = (4, nothing)
 
-    x = [1, 0, 1, 0]
-    @test all_parity_constraints_hold(model, x)
+    out = PC.reformulate_bipartite_cons!(model)
 
-    status = PC.propagate!(model)
-    @test status == PC.PARITY_PROPAGATE_UPDATED
+    @test out === model
+    @test length(model.cons) == 4
+    @test model.pivots == PC.PivotSlot[(1, nothing), nothing, nothing, (4, nothing)]
+
+    @test model.cons[1].par == unsplittable.par
+    @test model.cons[1].rhs == unsplittable.rhs
+
+    @test model.cons[2].meta.is_pure_xor
+    @test model.cons[3].meta.is_pure_xor
+    @test model.cons[2].rhs
+    @test model.cons[3].rhs
+
+    expected_split = Set([BitVector([1, 1, 0, 0, 0]), BitVector([0, 0, 1, 1, 0])])
+    @test Set([model.cons[2].par, model.cons[3].par]) == expected_split
+
+    @test model.cons[4].par == untouched.par
+    @test model.cons[4].rhs == untouched.rhs
+end
+
+@testset "reformulate_bipartite_cons! leaves non-splittable rows unchanged" begin
+    pos_to_var, var_to_pos = parity_identity_maps(4)
+    xor_con = PC.XorConstraint(BitVector([1, 0, 1, 0]), true)
+    non_bip = PC.XorConstraint(
+        falses(4),
+        parity_symmetric_bitmatrix(4, [(1, 2), (2, 3), (1, 3)]),
+        true,
+    )
+
+    model = PC.ParityModel(var_to_pos, pos_to_var, [deepcopy(xor_con), deepcopy(non_bip)])
+    model.pivots[1] = (1, nothing)
+    model.pivots[2] = (2, 1)
+
+    PC.reformulate_bipartite_cons!(model)
+
     @test length(model.cons) == 2
-    @test all(c -> c.meta.is_pure_xor, model.cons)
-    @test all_parity_constraints_hold(model, x)
+    @test model.pivots == PC.PivotSlot[(1, nothing), (2, 1)]
+    @test model.cons[1].par == xor_con.par
+    @test model.cons[1].rhs == xor_con.rhs
+    @test model.cons[2].conj == non_bip.conj
+    @test model.cons[2].rhs == non_bip.rhs
 end
 
-@testset "gauss_jordan! preserves validity for known solutions" begin
-    pos_to_var = [1, 2, 3]
-    var_to_pos = Dict(vid => pos for (pos, vid) in enumerate(pos_to_var))
-    cons = PC.XorConstraint[
-        PC.XorConstraint(BitVector([1, 1, 1]), true),
-        PC.XorConstraint(BitVector([1, 1, 0]), false),
-        PC.XorConstraint(BitVector([0, 1, 1]), true),
-    ]
-    model = PC.ParityModel(var_to_pos, pos_to_var, cons)
-    x = [0, 0, 1]
+@testset "cleanup! removes empty rows, tracks infeasibility, and keeps pivots aligned" begin
+    pos_to_var, var_to_pos = parity_identity_maps(4)
+    empty_feasible = PC.XorConstraint(falses(4), false)
+    keep1 = PC.XorConstraint(BitVector([1, 0, 0, 1]), true)
+    empty_infeasible = PC.XorConstraint(falses(4), true)
+    keep2 = PC.XorConstraint(
+        BitVector([0, 1, 0, 0]),
+        parity_symmetric_bitmatrix(4, [(2, 3)]),
+        false,
+    )
+    stale_empty = PC.XorConstraint(
+        BitVector([1, 0, 0, 0]),
+        parity_symmetric_bitmatrix(4, [(1, 2)]),
+        true,
+    )
+    PC.xor_con!(stale_empty, stale_empty)
 
-    @test all_parity_constraints_hold(model, x)
-    PC.gauss_jordan!(model)
-    @test all_parity_constraints_hold(model, x)
+    model = PC.ParityModel(
+        var_to_pos,
+        pos_to_var,
+        [empty_feasible, keep1, empty_infeasible, keep2, stale_empty],
+    )
+    model.pivots[1] = (1, nothing)
+    model.pivots[2] = (4, nothing)
+    model.pivots[3] = (2, nothing)
+    model.pivots[4] = (3, 2)
+    model.pivots[5] = (1, 2)
 
-    pos_to_var2 = [1, 2]
-    var_to_pos2 = Dict(vid => pos for (pos, vid) in enumerate(pos_to_var2))
-    conj = falses(2, 2)
-    conj[1, 2] = true
-    conj[2, 1] = true
-    model2 = PC.ParityModel(var_to_pos2, pos_to_var2, PC.XorConstraint[
-        PC.XorConstraint(BitVector([1, 0]), true),
-        PC.XorConstraint(falses(2), conj, false),
-    ])
-    x2 = [1, 0]
+    out = PC.cleanup!(model)
 
-    @test all_parity_constraints_hold(model2, x2)
-    PC.gauss_jordan!(model2; skip_conj = true)
-    @test all_parity_constraints_hold(model2, x2)
+    @test out === model
+    @test model.infeasible
+    @test length(model.cons) == 2
+    @test model.pivots == PC.PivotSlot[(4, nothing), (3, 2)]
+
+    @test model.cons[1].par == keep1.par
+    @test model.cons[1].rhs == keep1.rhs
+    @test model.cons[2].par == keep2.par
+    @test model.cons[2].conj == keep2.conj
+    @test model.cons[2].rhs == keep2.rhs
 end
 
-@testset "random equality QPModels keep parity validity invariant" begin
-    rng = MersenneTwister(20260301)
+@testset "show(::ParityModel) prints grouped algebraic constraints with model-owned variable ids" begin
+    pos_to_var = [20, 40, 30, 10]
+    var_to_pos = Dict(var_id => pos for (pos, var_id) in enumerate(pos_to_var))
 
-    for _ in 1:60
-        nvars = rand(rng, 2:7)
-        ncons = rand(rng, 1:10)
-        qp_model, x = random_equality_model_with_solution(rng, nvars, ncons)
+    xor1 = PC.XorConstraint(BitVector([1, 1, 0, 0]), false)
+    xor_and = PC.XorConstraint(
+        BitVector([0, 1, 0, 0]),
+        parity_symmetric_bitmatrix(4, [(1, 3)]),
+        true,
+    )
+    empty_xor = PC.XorConstraint(falses(4), false)
+    xor2 = PC.XorConstraint(BitVector([0, 0, 0, 1]), true)
 
-        parity_model = PC.get_parity_model(qp_model)
-        @test all_parity_constraints_hold(parity_model, x)
+    model = PC.ParityModel(var_to_pos, pos_to_var, [xor_and, xor1, empty_xor, xor2])
+    model.infeasible = true
+    model.pivots[1] = (1, 3)
+    model.pivots[4] = (4, nothing)
 
-        model_after_propagation = deepcopy(parity_model)
-        PC.propagate!(model_after_propagation)
-        @test all_parity_constraints_hold(model_after_propagation, x)
+    shown = repr("text/plain", model)
 
-        model_after_elimination = deepcopy(model_after_propagation)
-        refresh_constraint_cache!(model_after_elimination)
-        PC.gauss_jordan!(model_after_elimination)
-        @test all_parity_constraints_hold(model_after_elimination, x)
+    @test occursin("ParityModel", shown)
+    @test occursin("Variables: 4", shown)
+    @test occursin("Constraints: 4", shown)
+    @test occursin("XOR constraints: 3", shown)
+    @test occursin("XOR-AND constraints: 1", shown)
+    @test occursin("Infeasible: true", shown)
+    @test occursin("Pivoted rows: 2", shown)
+    @test occursin("XOR pivots: 1", shown)
+    @test occursin("XOR-AND pivots: 1", shown)
+    @test occursin("p20 ⊕ p40 = 0", shown)
+    @test occursin("p10 = 1", shown)
+    @test occursin("0 = 0", shown)
+    @test occursin("p40 ⊕ (p20 ∧ p30) = 1", shown)
 
-        model_skip_conj = deepcopy(parity_model)
-        refresh_constraint_cache!(model_skip_conj)
-        PC.gauss_jordan!(model_skip_conj; skip_conj = true)
-        @test all_parity_constraints_hold(model_skip_conj, x)
-    end
+    xor_section_idx = findfirst("XOR constraints (3):", shown)
+    xor1_idx = findfirst("p20 ⊕ p40 = 0", shown)
+    empty_idx = findfirst("0 = 0", shown)
+    xor2_idx = findfirst("p10 = 1", shown)
+    xor_and_section_idx = findfirst("XOR-AND constraints (1):", shown)
+    xor_and_idx = findfirst("p40 ⊕ (p20 ∧ p30) = 1", shown)
+
+    @test xor_section_idx !== nothing
+    @test xor1_idx !== nothing
+    @test empty_idx !== nothing
+    @test xor2_idx !== nothing
+    @test xor_and_section_idx !== nothing
+    @test xor_and_idx !== nothing
+    @test xor_section_idx < xor1_idx < empty_idx < xor2_idx < xor_and_section_idx < xor_and_idx
 end

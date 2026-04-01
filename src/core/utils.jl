@@ -125,35 +125,96 @@ function Base.show(io::IO, con::Constraint)
     return println(io, _qp_format_constraint(con))
 end
 
+function _parity_format_constraint(con::XorConstraint, pos_to_var_id::Vector{Int})
+    ensure_updated!(con)
 
-function Base.show(io::IO, con::XorConstraint)
-    n = length(con.pos_to_var)
     terms = String[]
+    n = length(pos_to_var_id)
 
-    # Linear XOR terms
     @inbounds for i in 1:n
-        if con.par[i]
-            push!(terms, "p$(con.pos_to_var[i])")
-        end
+        con.par[i] && push!(terms, "p$(pos_to_var_id[i])")
     end
+
     if con.conj !== nothing
-        # Conjunction (quadratic) terms
         @inbounds for i in 1:(n - 1)
             for j in (i + 1):n
-                if con.conj[i, j]
-                    v1 = con.pos_to_var[i]
-                    v2 = con.pos_to_var[j]
-                    push!(terms, "(p$(v1) ∧ p$(v2))")
-                end
+                con.conj[i, j] || continue
+                push!(terms, "(p$(pos_to_var_id[i]) ∧ p$(pos_to_var_id[j]))")
             end
         end
     end
 
-    if isempty(terms)
-        print(io, con.rhs ? "0 = 1" : "0 = 0")
-        return
+    lhs = isempty(terms) ? "0" : join(terms, " ⊕ ")
+    return string(lhs, " = ", con.rhs ? "1" : "0")
+end
+
+function _parity_pivot_counts(model::ParityModel)
+    total = 0
+    xor = 0
+    xor_and = 0
+
+    for pivot in model.pivots
+        pivot === nothing && continue
+        total += 1
+
+        if pivot[2] === nothing
+            xor += 1
+        else
+            xor_and += 1
+        end
     end
 
-    print(io, join(terms, " ⊕  "))
-    return print(io, " = ", con.rhs ? "1" : "0")
+    return total, xor, xor_and
 end
+
+function _parity_show(io::IO, model::ParityModel)
+    xor_count = 0
+    xor_and_count = 0
+
+    for con in model.cons
+        ensure_updated!(con)
+        if con.meta.is_pure_xor
+            xor_count += 1
+        else
+            xor_and_count += 1
+        end
+    end
+
+    pivot_total, xor_pivots, xor_and_pivots = _parity_pivot_counts(model)
+
+    println(io, "ParityModel")
+    println(io, "Variables: ", length(model.pos_to_var_id))
+    println(io, "Constraints: ", length(model.cons))
+    println(io, "XOR constraints: ", xor_count)
+    println(io, "XOR-AND constraints: ", xor_and_count)
+    println(io, "Infeasible: ", model.infeasible)
+    println(io, "Pivoted rows: ", pivot_total)
+    println(io, "XOR pivots: ", xor_pivots)
+    println(io, "XOR-AND pivots: ", xor_and_pivots)
+
+    println(io, "XOR constraints (", xor_count, "):")
+    for con in model.cons
+        ensure_updated!(con)
+        con.meta.is_pure_xor || continue
+        println(io, "  ", _parity_format_constraint(con, model.pos_to_var_id))
+    end
+
+    println(io, "XOR-AND constraints (", xor_and_count, "):")
+    for con in model.cons
+        ensure_updated!(con)
+        con.meta.is_pure_xor && continue
+        println(io, "  ", _parity_format_constraint(con, model.pos_to_var_id))
+    end
+
+    return
+end
+
+function Base.show(io::IO, model::ParityModel)
+    return _parity_show(io, model)
+end
+
+function Base.show(io::IO, ::MIME"text/plain", model::ParityModel)
+    return _parity_show(io, model)
+end
+
+
