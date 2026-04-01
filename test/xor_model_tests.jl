@@ -335,12 +335,41 @@ end
     out = PC.propagate!(model, manager)
 
     @test out === model
+    @test length(model.cons) == 1
     PC.ensure_updated!(model.cons[1])
-    PC.ensure_updated!(model.cons[2])
-    @test PC.constraint_nnz(model.cons[1]) == 0
-    @test !model.cons[1].rhs
-    @test model.cons[2].par == BitVector([1, 0, 1, 1])
-    @test model.cons[2].rhs
+    @test !model.infeasible
+    @test model.cons[1].par == BitVector([1, 0, 1, 1])
+    @test model.cons[1].rhs
+    @test all(!con.meta.requires_prop for con in model.cons)
+end
+
+@testset "propagate! does not make the p11/p1 fragment infeasible" begin
+    pos_to_var = [1, 7, 11, 21]
+    var_to_pos = Dict(vid => pos for (pos, vid) in enumerate(pos_to_var))
+    conj = falses(4, 4)
+    conj[1, 4] = true
+    conj[4, 1] = true
+
+    model = PC.ParityModel(
+        var_to_pos,
+        pos_to_var,
+        [
+            PC.XorConstraint(BitVector([1, 0, 0, 1]), false),
+            PC.XorConstraint(falses(4), conj, false),
+            PC.XorConstraint(BitVector([1, 1, 0, 0]), true),
+            PC.XorConstraint(BitVector([0, 1, 0, 0]), true),
+            PC.XorConstraint(BitVector([1, 0, 1, 0]), true),
+        ],
+    )
+    manager = PC.PropagationManager(model.pos_to_var_id)
+
+    PC.propagate!(model, manager)
+
+    @test !model.infeasible
+    @test all(begin
+        PC.ensure_updated!(con)
+        !(PC.constraint_nnz(con) == 0 && con.rhs)
+    end for con in model.cons)
     @test all(!con.meta.requires_prop for con in model.cons)
 end
 
@@ -357,18 +386,13 @@ end
 
     PC.propagate!(model, manager)
 
+    @test length(model.cons) == 1
     PC.ensure_updated!(model.cons[1])
-    PC.ensure_updated!(model.cons[2])
-    PC.ensure_updated!(model.cons[3])
 
-    @test PC.constraint_nnz(model.cons[1]) == 0
-    @test PC.constraint_nnz(model.cons[2]) == 0
-    @test !model.cons[2].rhs
-    @test model.cons[3].par == untouched.par
-    @test model.cons[3].rhs == untouched.rhs
-
-    @test model.pivots[1] === nothing
-    @test model.pivots[3] == (3, nothing)
+    @test !model.infeasible
+    @test model.cons[1].par == untouched.par
+    @test model.cons[1].rhs == untouched.rhs
+    @test model.pivots == PC.PivotSlot[(3, nothing)]
     @test all(!con.meta.requires_prop for con in model.cons)
 end
 

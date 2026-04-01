@@ -292,7 +292,7 @@ and enqueues the fixing in the pending fixings queue if it has not been seen
 before.
 """
 function fix_var!(manager::PropagationManager, vid::VarId, val::Bool)
-    lit = VarLit(vid, val)
+    lit = VarLit(vid, !val)
     add_edge!(manager, negated(lit), lit)
     pos_rep = repr!(manager, manager.lit_to_pos[VarLit(vid, false)])
     neg_rep = repr!(manager, manager.lit_to_pos[VarLit(vid, true)])

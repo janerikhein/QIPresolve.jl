@@ -151,7 +151,8 @@ end
     manager = PC.PropagationManager([5])
 
     PC.fix_var!(manager, 5, true)
-    @test has_edge(manager.graph, 1, 2)
+    @test has_edge(manager.graph, 2, 1)
+    @test !has_edge(manager.graph, 1, 2)
     @test manager.lit_labels[1] == PC.TRUE
     @test manager.lit_labels[2] == PC.FALSE
     @test PC.pop_fixing!(manager) == (5, true)
@@ -162,10 +163,35 @@ end
 
     manager2 = PC.PropagationManager([6])
     PC.fix_var!(manager2, 6, false)
-    @test has_edge(manager2.graph, 2, 1)
+    @test has_edge(manager2.graph, 1, 2)
+    @test !has_edge(manager2.graph, 2, 1)
     @test manager2.lit_labels[1] == PC.FALSE
     @test manager2.lit_labels[2] == PC.TRUE
     @test PC.pop_fixing!(manager2) == (6, false)
+end
+
+@testset "propagation manager keeps the p11/p1 parity relation negated" begin
+    pos_to_var = [1, 7, 11, 21]
+    conj = falses(4, 4)
+    conj[1, 4] = true
+    conj[4, 1] = true
+    cons = [
+        PC.XorConstraint(BitVector([1, 0, 0, 1]), false),
+        PC.XorConstraint(falses(4), conj, false),
+        PC.XorConstraint(BitVector([1, 1, 0, 0]), true),
+        PC.XorConstraint(BitVector([0, 1, 0, 0]), true),
+        PC.XorConstraint(BitVector([1, 0, 1, 0]), true),
+    ]
+    manager = PC.PropagationManager(pos_to_var)
+
+    for con in cons
+        PC.register_implications!(manager, con, pos_to_var)
+    end
+    PC.update!(manager)
+
+    subs = Set(drain_substitutions!(manager))
+    @test (11, 1, true) in subs
+    @test !((11, 1, false) in subs)
 end
 
 @testset "update_sccs! condenses graph and carries labels" begin
@@ -267,12 +293,12 @@ end
     neg12_scc = manager.rep_pos_to_scc_pos[neg1_rep]
 
     @test pos1_rep == pos2_rep
-    @test manager.lit_labels[pos12_scc] == PC.FALSE
-    @test manager.lit_labels[neg12_scc] == PC.TRUE
-    @test manager.lit_labels[pos3_scc] == PC.UNDEF
-    @test manager.lit_labels[neg3_scc] == PC.UNDEF
+    @test manager.lit_labels[pos12_scc] == PC.TRUE
+    @test manager.lit_labels[neg12_scc] == PC.FALSE
+    @test manager.lit_labels[pos3_scc] == PC.TRUE
+    @test manager.lit_labels[neg3_scc] == PC.FALSE
 
-    @test Set(drain_fixings!(manager)) == Set([(1, true), (1, false)])
+    @test Set(drain_fixings!(manager)) == Set([(1, true), (3, true)])
     @test PC.pop_substitution!(manager) == (2, 1, false)
     @test PC.pop_substitution!(manager) === nothing
 end
