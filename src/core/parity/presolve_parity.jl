@@ -50,9 +50,10 @@ function get_builders(model::QPModel, con::Constraint)
             diag_j = convert(Int, get_quad_coeff(con.qe, vid_j, vid_j))
             lin_j = convert(Int, get_lin_coeff(con.qe, vid_j))
             bilin_ij = convert(Int, get_quad_coeff(con.qe, vid_i, vid_j))
+            @assert mod(bilin_ij, 2) == 0
 
             cj = is_bin_j ? diag_j + lin_j : diag_j
-            if (mod(bilin_ij, 2) == 1) ⊻ (mod(ci, 2) == 1 && mod(cj, 2) == 1)
+            if (mod(bilin_ij ÷ 2, 2) == 1) ⊻ (mod(ci, 2) == 1 && mod(cj, 2) == 1)
                 add_conj!(builder_mod4, vid_i, vid_j)
             end
         end
@@ -85,6 +86,7 @@ function build_parity_model(model::QPModel)
     con_builders = XorConstraintBuilder[]
 
     for con in model.cons
+        !is_equality(con) && continue
         builder_mod2, builder_mod4 = get_builders(model, con)
         push!(con_builders, builder_mod2)
         builder_mod4 !== nothing && push!(con_builders, builder_mod4)
@@ -121,7 +123,7 @@ function parity_presolve!(model::QPModel)
             if has_unpivoted_xor_con(parity_model)
                 gauss_jordan_xor!(parity_model)
                 propagate!(parity_model, propagator)
-                substitute_parity_pivots!(parity_model)
+                substitute_pivots_in_conjunctive_terms!(parity_model)
             else
                 gauss_jordan_xor_and!(parity_model)
                 propagate!(parity_model, propagator)

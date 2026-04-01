@@ -164,6 +164,37 @@ function split_bipartite(con::XorConstraint)
 end
 
 """
+    fix_var!(con::XorConstraint, var_idx::Int, val::Bool) -> XorConstraint
+
+Fix `x[var_idx]` to `val` in place.
+"""
+function fix_var!(con::XorConstraint, var_idx::Int, val::Bool)
+    @assert 1 <= var_idx <= length(con.par)
+
+    if con.par[var_idx]
+        con.rhs ⊻= val
+        con.par[var_idx] = false
+    end
+
+    if con.conj !== nothing
+        conj = con.conj::BitMatrix
+        conj_var = BitVector(copy(@view conj[:, var_idx]))
+
+        if val
+            con.par .⊻= conj_var
+        end
+
+        conj[:, var_idx] .= false
+        conj[var_idx, :] .= false
+    end
+
+    con.meta.requires_update = true
+    con.meta.requires_prop = true
+
+    return con
+end
+
+"""
 Performs substitution x[var_idx] <- x[subst_idx] ⊻ neg.
 
 Assumes:
@@ -172,19 +203,29 @@ Assumes:
 - var_idx != subst_idx
 """
 function substitute_var!(con::XorConstraint, var_idx::Int, subst_idx::Int, neg::Bool)
+    @assert 1 <= var_idx <= length(con.par)
+    @assert 1 <= subst_idx <= length(con.par)
     @assert var_idx != subst_idx
-    @assert con.conj !== nothing
+
+    @assert con.conj === nothing || con.conj[var_idx, var_idx] == false
+    @assert con.conj === nothing || con.conj[subst_idx, subst_idx] == false
 
     old_par = con.par[var_idx]
-    conj = con.conj::BitMatrix
-
-    conj_var = view(conj, :, var_idx)
-    conj_subst = view(conj, :, subst_idx)
 
     # linear term: old_par * x_var -> old_par * (x_subst ⊻ neg)
     con.par[subst_idx] ⊻= old_par
     con.rhs ⊻= (old_par & neg)
     con.par[var_idx] = false
+
+    if con.conj === nothing
+        con.meta.requires_update = true
+        con.meta.requires_prop = true
+        return con
+    end
+
+    conj = con.conj::BitMatrix
+    conj_var = view(conj, :, var_idx)
+    conj_subst = view(conj, :, subst_idx)
 
     # quadratic terms involving var_idx:
     # (x_var ∧ x_k) -> (x_subst ∧ x_k) ⊻ (neg ∧ x_k)
@@ -233,12 +274,8 @@ function substitute_var!(
     @assert 1 <= var_idx <= length(con.par)
     @assert length(subst_mask) == length(con.par)
     @assert !subst_mask[var_idx]
-    @assert con.conj !== nothing
 
     old_par = con.par[var_idx]
-    conj = con.conj::BitMatrix
-    subst_indices = findall(subst_mask)
-    neighbor_indices = findall(@view conj[:, var_idx])
 
     # linear term:
     # old_par * x_i -> old_par * ((xor-sum over subst vars) ⊻ neg)
@@ -247,6 +284,16 @@ function substitute_var!(
         con.rhs ⊻= neg
     end
     con.par[var_idx] = false
+
+    if con.conj === nothing
+        con.meta.requires_update = true
+        con.meta.requires_prop = true
+        return con
+    end
+
+    conj = con.conj::BitMatrix
+    subst_indices = findall(subst_mask)
+    neighbor_indices = findall(@view conj[:, var_idx])
 
     # quadratic terms:
     # (x_i ∧ x_k) -> ((xor-sum over subst vars) ∧ x_k) ⊻ (neg ∧ x_k)
@@ -266,6 +313,63 @@ function substitute_var!(
     end
 
     # remove var_idx completely
+    conj[:, var_idx] .= false
+    conj[var_idx, :] .= false
+
+    con.meta.requires_update = true
+    con.meta.requires_prop = true
+
+    return con
+end
+
+"""
+Performs substitution inside conjunction terms only
+
+    x[var_idx] <- (⊻_{j : subst_mask[j]} x[j]) ⊻ neg
+
+This only rewrites terms of the form `x[var_idx] ∧ x[k]` and leaves any linear
+occurrence of `x[var_idx]` untouched.
+
+Assumes:
+- con.conj is symmetric
+- con.conj[i, i] == false on entry for all i
+- subst_mask[var_idx] == false
+"""
+function substitute_var_in_conjunctive_terms!(
+    con::XorConstraint,
+    var_idx::Int,
+    subst_mask::BitVector,
+    neg::Bool,
+)
+    @assert 1 <= var_idx <= length(con.par)
+    @assert length(subst_mask) == length(con.par)
+    @assert !subst_mask[var_idx]
+
+    con.conj === nothing && return con
+
+    conj = con.conj::BitMatrix
+    subst_indices = findall(subst_mask)
+    neighbor_indices = findall(@view conj[:, var_idx])
+    isempty(neighbor_indices) && return con
+
+    # quadratic terms:
+    # (x_i ∧ x_k) -> ((xor-sum over subst vars) ∧ x_k) ⊻ (neg ∧ x_k)
+    for k in neighbor_indices
+        if neg
+            con.par[k] ⊻= true
+        end
+
+        for j in subst_indices
+            if j == k
+                con.par[j] ⊻= true
+            else
+                conj[j, k] ⊻= true
+                conj[k, j] = conj[j, k]
+            end
+        end
+    end
+
+    # remove var_idx from conjunction terms
     conj[:, var_idx] .= false
     conj[var_idx, :] .= false
 

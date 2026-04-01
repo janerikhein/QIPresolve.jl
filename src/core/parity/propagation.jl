@@ -492,7 +492,7 @@ function update!(manager::PropagationManager)
 end
 
 
-function register_implications!(manager::PropagationManager, con::XorConstraint, idx_to_vid::Dict{Int, VarId})
+function register_implications!(manager::PropagationManager, con::XorConstraint, idx_to_vid)
     con.meta.requires_prop || return nothing
     con.meta.requires_update && update!(con)
 

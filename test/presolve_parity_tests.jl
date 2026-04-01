@@ -61,13 +61,13 @@ end
     )
     con3 = PC.Constraint(
         parity_next_con_id(),
-        PC.QuadExpr(ParityQuadTerm[(1.0, 1, 2)], ParityLinTerm[]),
+        PC.QuadExpr(ParityQuadTerm[(2.0, 1, 2)], ParityLinTerm[]),
         0.0,
         0.0,
     )
     con4 = PC.Constraint(
         parity_next_con_id(),
-        PC.QuadExpr(ParityQuadTerm[(1.0, 2, 3)], ParityLinTerm[]),
+        PC.QuadExpr(ParityQuadTerm[(2.0, 2, 3)], ParityLinTerm[]),
         0.0,
         0.0,
     )
@@ -103,4 +103,45 @@ end
     @test !parity_model.cons[6].meta.is_pure_xor
     @test parity_model.cons[6].par == falses(3)
     @test parity_model.cons[6].conj == parity_edge_matrix(3, [(1, 3)])
+end
+
+
+@testset "parity XOR branch expands conjunction terms using pivot substitutions" begin
+    vars = Dict{PC.VarId, PC.IntVar}(
+        1 => PC.IntVar(0.0, 1.0),
+        2 => PC.IntVar(0.0, 1.0),
+        3 => PC.IntVar(0.0, 1.0),
+        4 => PC.IntVar(0.0, 1.0),
+    )
+
+    xor_con = PC.Constraint(
+        parity_next_con_id(),
+        PC.QuadExpr(ParityQuadTerm[], ParityLinTerm[(1.0, 1), (1.0, 2), (1.0, 3)]),
+        1.0,
+        1.0,
+    )
+    mixed_con = PC.Constraint(
+        parity_next_con_id(),
+        PC.QuadExpr(ParityQuadTerm[(2.0, 1, 4)], ParityLinTerm[(2.0, 4)]),
+        0.0,
+        0.0,
+    )
+
+    model = PC.QPModel(vars, [xor_con, mixed_con], parity_empty_objective(), :min)
+    parity_model = PC.build_parity_model(model)
+    propagator = PC.PropagationManager(parity_model.pos_to_var_id)
+
+    PC.reformulate_bipartite_cons!(parity_model)
+    PC.propagate!(parity_model, propagator)
+    PC.gauss_jordan_xor!(parity_model)
+    PC.propagate!(parity_model, propagator)
+    PC.substitute_pivots_in_conjunctive_terms!(parity_model)
+
+    @test parity_model.pos_to_var_id == [1, 2, 3, 4]
+    @test parity_model.pivots[1] == (1, nothing)
+    @test parity_model.cons[1].par == BitVector([1, 1, 1, 0])
+    @test parity_model.cons[1].rhs
+    @test parity_model.cons[4].par == falses(4)
+    @test parity_model.cons[4].conj == parity_edge_matrix(4, [(2, 4), (3, 4)])
+    @test !parity_model.cons[4].rhs
 end

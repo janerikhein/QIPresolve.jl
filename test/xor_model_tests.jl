@@ -141,6 +141,54 @@ end
     @test model.cons[2].rhs == xor_row.rhs
 end
 
+@testset "substitute_pivots_in_conjunctive_terms! rewrites non-owner conjunction terms only" begin
+    pos_to_var, var_to_pos = parity_identity_maps(4)
+    xor_pivot = PC.XorConstraint(BitVector([1, 1, 1, 0]), true)
+    target = PC.XorConstraint(
+        falses(4),
+        parity_symmetric_bitmatrix(4, [(1, 4)]),
+        false,
+    )
+    linear_only = PC.XorConstraint(BitVector([1, 0, 0, 1]), false)
+
+    model = PC.ParityModel(var_to_pos, pos_to_var, [deepcopy(xor_pivot), target, deepcopy(linear_only)])
+    model.pivots[1] = (1, nothing)
+
+    out = PC.substitute_pivots_in_conjunctive_terms!(model)
+
+    @test out === model
+    @test model.cons[1].par == xor_pivot.par
+    @test model.cons[1].rhs == xor_pivot.rhs
+    @test model.cons[2].par == BitVector([0, 0, 0, 1])
+    @test model.cons[2].conj == parity_symmetric_bitmatrix(4, [(2, 4), (3, 4)])
+    @test !model.cons[2].rhs
+    @test model.cons[3].par == linear_only.par
+    @test model.cons[3].rhs == linear_only.rhs
+end
+
+@testset "substitute_pivots_in_conjunctive_terms! revalidates changed pivots and composes multiple substitutions" begin
+    pos_to_var, var_to_pos = parity_identity_maps(5)
+    xor_pivot1 = PC.XorConstraint(BitVector([1, 1, 0, 0, 0]), true)
+    xor_pivot2 = PC.XorConstraint(BitVector([0, 0, 1, 0, 1]), false)
+    target = PC.XorConstraint(
+        falses(5),
+        parity_symmetric_bitmatrix(5, [(1, 4), (3, 4)]),
+        false,
+    )
+
+    model = PC.ParityModel(var_to_pos, pos_to_var, [xor_pivot1, xor_pivot2, target])
+    model.pivots[1] = (1, nothing)
+    model.pivots[2] = (3, nothing)
+    model.pivots[3] = (1, 4)
+
+    PC.substitute_pivots_in_conjunctive_terms!(model)
+
+    @test model.cons[3].par == BitVector([0, 0, 0, 1, 0])
+    @test model.cons[3].conj == parity_symmetric_bitmatrix(5, [(2, 4), (4, 5)])
+    @test !model.cons[3].rhs
+    @test model.pivots[3] === nothing
+end
+
 @testset "reformulate_bipartite_cons! splits bipartite rows and resets their pivots" begin
     pos_to_var, var_to_pos = parity_identity_maps(5)
     bipartite = PC.XorConstraint(
@@ -246,6 +294,82 @@ end
     @test model.cons[2].par == keep2.par
     @test model.cons[2].conj == keep2.conj
     @test model.cons[2].rhs == keep2.rhs
+end
+
+@testset "fix_var!(model) applies to pure XOR and XOR-AND rows" begin
+    pos_to_var, var_to_pos = parity_identity_maps(3)
+    xor_con = PC.XorConstraint(BitVector([1, 0, 1]), true)
+    xor_and = PC.XorConstraint(
+        BitVector([0, 1, 0]),
+        parity_symmetric_bitmatrix(3, [(1, 2)]),
+        false,
+    )
+
+    model = PC.ParityModel(var_to_pos, pos_to_var, [xor_con, xor_and])
+    out = PC.fix_var!(model, 1, true)
+
+    @test out === model
+    @test model.cons[1].par == BitVector([0, 0, 1])
+    @test !model.cons[1].rhs
+    @test model.cons[1].meta.requires_update
+    @test model.cons[1].meta.requires_prop
+
+    @test model.cons[2].par == falses(3)
+    @test model.cons[2].conj == parity_symmetric_bitmatrix(3, Tuple{Int, Int}[])
+    @test !model.cons[2].rhs
+    @test model.cons[2].meta.requires_update
+    @test model.cons[2].meta.requires_prop
+
+    PC.ensure_updated!(model.cons[2])
+    @test model.cons[2].conj === nothing
+end
+
+@testset "propagate! applies substitutions from two-term XOR rows" begin
+    pos_to_var, var_to_pos = parity_identity_maps(4)
+    eq_row = PC.XorConstraint(BitVector([1, 1, 0, 0]), true)
+    other_row = PC.XorConstraint(BitVector([0, 1, 1, 1]), false)
+
+    model = PC.ParityModel(var_to_pos, pos_to_var, [eq_row, other_row])
+    manager = PC.PropagationManager(model.pos_to_var_id)
+
+    out = PC.propagate!(model, manager)
+
+    @test out === model
+    PC.ensure_updated!(model.cons[1])
+    PC.ensure_updated!(model.cons[2])
+    @test PC.constraint_nnz(model.cons[1]) == 0
+    @test !model.cons[1].rhs
+    @test model.cons[2].par == BitVector([1, 0, 1, 1])
+    @test model.cons[2].rhs
+    @test all(!con.meta.requires_prop for con in model.cons)
+end
+
+@testset "propagate! reaches a fixpoint and revalidates changed pivots" begin
+    pos_to_var, var_to_pos = parity_identity_maps(5)
+    eq_row = PC.XorConstraint(BitVector([1, 1, 0, 0, 0]), false)
+    fix_row = PC.XorConstraint(BitVector([0, 1, 0, 0, 0]), true)
+    untouched = PC.XorConstraint(BitVector([0, 0, 1, 1, 1]), true)
+
+    model = PC.ParityModel(var_to_pos, pos_to_var, [eq_row, fix_row, untouched])
+    model.pivots[1] = (1, nothing)
+    model.pivots[3] = (3, nothing)
+    manager = PC.PropagationManager(model.pos_to_var_id)
+
+    PC.propagate!(model, manager)
+
+    PC.ensure_updated!(model.cons[1])
+    PC.ensure_updated!(model.cons[2])
+    PC.ensure_updated!(model.cons[3])
+
+    @test PC.constraint_nnz(model.cons[1]) == 0
+    @test PC.constraint_nnz(model.cons[2]) == 0
+    @test !model.cons[2].rhs
+    @test model.cons[3].par == untouched.par
+    @test model.cons[3].rhs == untouched.rhs
+
+    @test model.pivots[1] === nothing
+    @test model.pivots[3] == (3, nothing)
+    @test all(!con.meta.requires_prop for con in model.cons)
 end
 
 @testset "show(::ParityModel) prints grouped algebraic constraints with model-owned variable ids" begin

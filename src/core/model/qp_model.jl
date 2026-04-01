@@ -119,7 +119,6 @@ function fix_vars!(model::QPModel)
     for (var_id, var) in model.vars
         var.lb != var.ub && continue
         affine_transform!(model, var_id, 1.0, var.lb)
-        println("var_id", var_id, model.cons[9])
         @assert model.vars[var_id].lb == model.vars[var_id].ub == 0.0
         for con in model.cons
             remove_var!(con.qe, var_id)

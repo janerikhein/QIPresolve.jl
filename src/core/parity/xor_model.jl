@@ -156,16 +156,154 @@ function substitute_parity_pivots!(model::ParityModel)
     return model
 end
 
+function substitute_pivots_in_conjunctive_terms!(model::ParityModel)
+    changed = falses(length(model.cons))
+
+    for (piv_row_idx, pivot) in enumerate(model.pivots)
+        pivot === nothing && continue
+
+        piv_col_idx1, piv_col_idx2 = pivot
+        piv_col_idx2 === nothing || continue
+
+        piv_con = ensure_updated!(model.cons[piv_row_idx])
+        @assert piv_con.meta.is_pure_xor
+        @assert piv_con.par[piv_col_idx1]
+
+        subst_mask = copy(piv_con.par)
+        subst_mask[piv_col_idx1] = false
+
+        for (row_idx, con) in enumerate(model.cons)
+            row_idx == piv_row_idx && continue
+
+            ensure_updated!(con)
+            constraint_nnz(con) == 0 && continue
+            con.conj === nothing && continue
+            any(@view con.conj[:, piv_col_idx1]) || continue
+
+            substitute_var_in_conjunctive_terms!(con, piv_col_idx1, subst_mask, piv_con.rhs)
+            changed[row_idx] = true
+        end
+    end
+
+    for row_idx in eachindex(model.cons)
+        changed[row_idx] || continue
+        _revalidate_pivot!(model, row_idx)
+    end
+
+    return model
+end
+
+function _constraint_contains_var(con::XorConstraint, var_idx::Int)
+    con.par[var_idx] && return true
+    con.conj === nothing && return false
+    return any(@view con.conj[:, var_idx])
+end
+
+function _fix_var_rows!(changed::BitVector, model::ParityModel, vid::VarId, val::Bool)
+    
+    vid_idx = model.var_id_to_pos[vid]
+
+    for (i, con) in enumerate(model.cons)
+        _constraint_contains_var(con, vid_idx) || continue
+        fix_var!(con, vid_idx, val)
+        changed[i] = true
+    end
+
+    return model
+end
+
+function _substitute_var_rows!(
+    changed::BitVector,
+    model::ParityModel,
+    vid::VarId,
+    substid::VarId,
+    neg::Bool,
+)
+    if vid == substid
+        @assert !neg
+        return model
+    end
+
+    vid_idx = model.var_id_to_pos[vid]
+    subst_idx = model.var_id_to_pos[substid]
+
+    for (i, con) in enumerate(model.cons)
+        _constraint_contains_var(con, vid_idx) || continue
+        substitute_var!(con, vid_idx, subst_idx, neg)
+        changed[i] = true
+    end
+
+    return model
+end
+
+function _is_valid_pivot(con::XorConstraint, pivot::PivotIndex)
+    piv_col_idx1, piv_col_idx2 = pivot
+    if piv_col_idx2 === nothing
+        return con.par[piv_col_idx1]
+    end
+
+    return con.conj !== nothing && con.conj[piv_col_idx1, piv_col_idx2]
+end
+
+function _revalidate_pivot!(model::ParityModel, row_idx::Int)
+    pivot = model.pivots[row_idx]
+    pivot === nothing && return model
+
+    con = ensure_updated!(model.cons[row_idx])
+    _is_valid_pivot(con, pivot) || (model.pivots[row_idx] = nothing)
+
+    return model
+end
+
+function _has_constraints_requiring_propagation(model::ParityModel)
+    return any(con.meta.requires_prop for con in model.cons)
+end
+
+"""
+Applies fixing vid -> val to all constraints
+"""
+function fix_var!(model::ParityModel, vid::VarId, val::Bool)
+    changed = falses(length(model.cons))
+    return _fix_var_rows!(changed, model, vid, val)
+end
+
 """
 Applies substitution vid -> substvid ⊻ neg to all constraints
 """
 function substitute_var!(model::ParityModel, vid::VarId, substid::VarId, neg::Bool)
-    vid_idx = model.var_id_to_pos[vid]
-    subst_idx = model.var_id_to_pos[substid]
+    changed = falses(length(model.cons))
+    return _substitute_var_rows!(changed, model, vid, substid, neg)
+end
 
-    for con in model.cons
-        con.conj === nothing && continue
-        substitute_var!(con, vid_idx, subst_idx, neg)
+function propagate!(model::ParityModel, manager::PropagationManager)
+    while _has_constraints_requiring_propagation(model) && !model.infeasible
+        for con in model.cons
+            register_implications!(manager, con, model.pos_to_var_id)
+        end
+
+        update!(manager)
+        changed = falses(length(model.cons))
+
+        while true
+            fixing = pop_fixing!(manager)
+            fixing === nothing && break
+            vid, val = fixing
+            _fix_var_rows!(changed, model, vid, val)
+        end
+        
+        while true
+            substitution = pop_substitution!(manager)
+            substitution === nothing && break
+            vid, substid, neg = substitution
+            _substitute_var_rows!(changed, model, vid, substid, neg)
+        end
+
+        for i in eachindex(model.cons)
+            changed[i] || continue
+            _revalidate_pivot!(model, i)
+        end
+
+        cleanup!(model)
     end
 
     return model

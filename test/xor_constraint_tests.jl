@@ -85,6 +85,19 @@ function assert_mask_substitution_equivalent(
     end
 end
 
+function assert_fix_equivalent(
+    original::PC.XorConstraint,
+    transformed::PC.XorConstraint,
+    var_idx::Int,
+    val::Bool,
+)
+    n = length(original.par)
+    foreach_assignment_except(n, var_idx) do x
+        x[var_idx] = val
+        @test constraint_holds(transformed, x) == constraint_holds(original, x)
+    end
+end
+
 @testset "XorConstraint constructors" begin
     par = BitVector([1, 0, 1, 0])
     conj = symmetric_bitmatrix(4, [(1, 2), (1, 3), (2, 4), (3, 4)])
@@ -182,6 +195,58 @@ end
     @test PC.split_bipartite(non_bip) === nothing
 end
 
+@testset "fix_var! preserves semantics and invariants" begin
+    original_xor = PC.XorConstraint(BitVector([1, 0, 1, 0]), true)
+    con_xor = deepcopy(original_xor)
+
+    out_xor = PC.fix_var!(con_xor, 1, true)
+
+    @test out_xor === con_xor
+    @test con_xor.par == BitVector([0, 0, 1, 0])
+    @test !con_xor.rhs
+    @test con_xor.meta.requires_update
+    @test con_xor.meta.requires_prop
+    assert_fix_equivalent(original_xor, con_xor, 1, true)
+
+    original_false = PC.XorConstraint(
+        BitVector([0, 1, 0, 0]),
+        symmetric_bitmatrix(4, [(1, 2), (1, 3)]),
+        false,
+    )
+    con_false = deepcopy(original_false)
+
+    PC.fix_var!(con_false, 1, false)
+
+    @test con_false.par == BitVector([0, 1, 0, 0])
+    @test con_false.conj == symmetric_bitmatrix(4, Tuple{Int, Int}[])
+    @test !con_false.rhs
+    @test all(.!con_false.conj[:, 1])
+    @test all(.!con_false.conj[1, :])
+    @test con_false.conj == permutedims(con_false.conj)
+    @test con_false.meta.requires_update
+    @test con_false.meta.requires_prop
+    assert_fix_equivalent(original_false, con_false, 1, false)
+
+    original_true = PC.XorConstraint(
+        BitVector([0, 1, 0, 0]),
+        symmetric_bitmatrix(4, [(1, 2), (1, 3)]),
+        true,
+    )
+    con_true = deepcopy(original_true)
+
+    PC.fix_var!(con_true, 1, true)
+
+    @test con_true.par == BitVector([0, 0, 1, 0])
+    @test con_true.conj == symmetric_bitmatrix(4, Tuple{Int, Int}[])
+    @test con_true.rhs
+    @test all(.!con_true.conj[:, 1])
+    @test all(.!con_true.conj[1, :])
+    @test con_true.conj == permutedims(con_true.conj)
+    @test con_true.meta.requires_update
+    @test con_true.meta.requires_prop
+    assert_fix_equivalent(original_true, con_true, 1, true)
+end
+
 @testset "substitute_var! with single target preserves semantics and invariants" begin
     original = PC.XorConstraint(
         BitVector([1, 0, 0, 1]),
@@ -268,6 +333,49 @@ end
     @test con_const.meta.requires_prop
 
     assert_mask_substitution_equivalent(original_const, con_const, 1, empty_mask, true)
+end
+
+@testset "substitute_var_in_conjunctive_terms! rewrites only conjunction terms" begin
+    original = PC.XorConstraint(
+        falses(4),
+        symmetric_bitmatrix(4, [(1, 4)]),
+        false,
+    )
+    con = deepcopy(original)
+    subst_mask = BitVector([0, 1, 1, 0])
+
+    out = PC.substitute_var_in_conjunctive_terms!(con, 1, subst_mask, true)
+
+    @test out === con
+    @test con.par == BitVector([0, 0, 0, 1])
+    @test con.conj == symmetric_bitmatrix(4, [(2, 4), (3, 4)])
+    @test !con.rhs
+    @test all(.!con.conj[:, 1])
+    @test all(.!con.conj[1, :])
+    @test con.conj == permutedims(con.conj)
+    @test con.meta.requires_update
+    @test con.meta.requires_prop
+
+    assert_mask_substitution_equivalent(original, con, 1, subst_mask, true)
+
+    original_diag = PC.XorConstraint(
+        BitVector([1, 0, 0, 0]),
+        symmetric_bitmatrix(4, [(1, 2), (1, 4)]),
+        false,
+    )
+    con_diag = deepcopy(original_diag)
+    diag_mask = BitVector([0, 1, 0, 1])
+
+    PC.substitute_var_in_conjunctive_terms!(con_diag, 1, diag_mask, false)
+
+    @test con_diag.par == BitVector([1, 1, 0, 1])
+    @test con_diag.conj == symmetric_bitmatrix(4, Tuple{Int, Int}[])
+    @test !con_diag.rhs
+    @test all(.!con_diag.conj[:, 1])
+    @test all(.!con_diag.conj[1, :])
+    @test con_diag.conj == permutedims(con_diag.conj)
+    @test con_diag.meta.requires_update
+    @test con_diag.meta.requires_prop
 end
 
 @testset "XorConstraintBuilder toggling and build" begin
