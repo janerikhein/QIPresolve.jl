@@ -343,6 +343,27 @@ end
     @test all(!con.meta.requires_prop for con in model.cons)
 end
 
+@testset "propagate! re-enqueues fixings across passes when substitutions create fresh occurrences" begin
+    pos_to_var, var_to_pos = parity_identity_maps(3)
+    fix_row = PC.XorConstraint(BitVector([1, 0, 0]), false)
+    eq_row = PC.XorConstraint(BitVector([1, 1, 0]), false)
+    mixed_row = PC.XorConstraint(
+        BitVector([0, 1, 0]),
+        parity_symmetric_bitmatrix(3, [(2, 3)]),
+        false,
+    )
+
+    model = PC.ParityModel(var_to_pos, pos_to_var, [fix_row, eq_row, mixed_row])
+    manager = PC.PropagationManager(model.pos_to_var_id)
+
+    out = PC.propagate!(model, manager)
+
+    @test out === model
+    @test !model.infeasible
+    @test isempty(model.cons)
+    @test isempty(model.pivots)
+end
+
 @testset "propagate! does not make the p11/p1 fragment infeasible" begin
     pos_to_var = [1, 7, 11, 21]
     var_to_pos = Dict(vid => pos for (pos, vid) in enumerate(pos_to_var))

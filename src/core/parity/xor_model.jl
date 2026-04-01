@@ -277,6 +277,9 @@ end
 
 function propagate!(model::ParityModel, manager::PropagationManager)
     while _has_constraints_requiring_propagation(model) && !model.infeasible
+        empty!(manager.seen_fixings)
+        empty!(manager.seen_substitutions)
+
         for con in model.cons
             register_implications!(manager, con, model.pos_to_var_id)
         end

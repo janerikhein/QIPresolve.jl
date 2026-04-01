@@ -138,10 +138,14 @@ end
     PC.substitute_pivots_in_conjunctive_terms!(parity_model)
 
     @test parity_model.pos_to_var_id == [1, 2, 3, 4]
+    @test length(parity_model.cons) == 3
     @test parity_model.pivots[1] == (1, nothing)
     @test parity_model.cons[1].par == BitVector([1, 1, 1, 0])
     @test parity_model.cons[1].rhs
-    @test parity_model.cons[4].par == falses(4)
-    @test parity_model.cons[4].conj == parity_edge_matrix(4, [(2, 4), (3, 4)])
-    @test !parity_model.cons[4].rhs
+    @test parity_model.cons[2].par == falses(4)
+    @test parity_model.cons[2].conj == parity_edge_matrix(4, [(2, 3)])
+    @test !parity_model.cons[2].rhs
+    @test parity_model.cons[3].par == falses(4)
+    @test parity_model.cons[3].conj == parity_edge_matrix(4, [(2, 4), (3, 4)])
+    @test !parity_model.cons[3].rhs
 end
