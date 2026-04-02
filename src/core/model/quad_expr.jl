@@ -666,6 +666,14 @@ Throws `ArgumentError` when `a == 0.0`.
     return a_inv, b_inv
 end
 
+@inline function invert_lin(a::Float64, b::Float64, c::Float64)
+    a == 0.0 && throw(ArgumentError("Cannot invert affine shear x <- a*x + b*y + c with a = 0"))
+    a_inv = 1.0 / a
+    b_inv = -b / a
+    c_inv = -c / a
+    return a_inv, b_inv, c_inv
+end
+
 
 """
     lin_transform!(
@@ -674,12 +682,13 @@ end
         other_id::VarId,
         a::Float64,
         b::Float64;
+        c::Float64 = 0.0,
         invert::Bool = false,
     ) -> QuadExpr
 
 Perform the linear 2-variable substitution
 
-    x_var_id := a * x_var_id + b * x_other_id
+    x_var_id := a * x_var_id + b * x_other_id + c
 
 in the quadratic expression
 
@@ -690,7 +699,7 @@ stored in `qe`.
 Notes
 - Updates `quad_buf` and `lin_buf` in-place (no allocations, no views).
 - `other_id` (the "y") is not otherwise changed; only `var_id` is substituted.
-- If `invert=true`, applies the inverse transform for the provided `(a, b)`.
+- If `invert=true`, applies the inverse transform for the provided `(a, b, c)`.
 - Coefficients are stored canonically in the upper triangle of `quad_buf`.
 """
 function lin_transform!(
@@ -699,16 +708,24 @@ function lin_transform!(
         other_id::VarId,
         a::Float64,
         b::Float64;
+        c::Float64 = 0.0,
         invert::Bool = false
     )
     if invert
-        (a, b) = invert_lin(a, b)
+        (a, b, c) = invert_lin(a, b, c)
     end
 
     posk = var_pos(qe, var_id)
     posk == 0 && return qe
+    if var_id == other_id
+        return affine_transform!(qe, var_id, a + b, c)
+    end
+
     posm = var_pos(qe, other_id)
-    posm == 0 && return qe
+    if posm == 0
+        b == 0.0 || (posm = add_var!(qe, other_id; clear_buf = true))
+        b == 0.0 && return affine_transform!(qe, var_id, a, c)
+    end
 
     pk = qe.perm[posk]  # physical index of var_id (k)
     pm = qe.perm[posm]  # physical index of other_id (m)
@@ -728,9 +745,11 @@ function lin_transform!(
         end
         qmm = qe.quad_buf[pm, pm]
 
+        qe.constant += c * ck + (c * c) * qkk
+
         # Linear terms
-        qe.lin_buf[pk] = a * ck
-        qe.lin_buf[pm] = cm + b * ck
+        qe.lin_buf[pk] = a * ck + 2.0 * a * c * qkk
+        qe.lin_buf[pm] = cm + b * ck + c * qkm + 2.0 * b * c * qkk
 
         # Quadratic terms among {k,m}
         qe.quad_buf[pk, pk] = (a * a) * qkk
@@ -761,6 +780,8 @@ function lin_transform!(
                 else
                     @inbounds qe.quad_buf[pj, pm]
                 end
+
+                qe.lin_buf[pj] += c * qkj_old
 
                 qmj_new = qmj_old + b * qkj_old
                 if pm <= pj

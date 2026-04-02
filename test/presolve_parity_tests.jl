@@ -20,6 +20,38 @@ function parity_edge_matrix(n::Int, edges::Vector{Tuple{Int, Int}})
     return mat
 end
 
+function parity_eval_equivalent(model0, model, var_id, scale, offset)
+    con0 = model0.cons[1]
+    con = model.cons[1]
+    shift_lhs = con0.lhs - con.lhs
+    shift_rhs = con0.rhs - con.rhs
+
+    @test isapprox(shift_lhs, shift_rhs; atol = 1.0e-12)
+
+    for _ in 1:5
+        x = randn(2)
+        x_sub = copy(x)
+        x_sub[var_id] = scale * x[var_id] + offset
+
+        val_before = PC.eval_full(con0.qe, x_sub)
+        val_after = PC.eval_full(con.qe, x)
+        @test isapprox(val_after, val_before - shift_lhs; atol = 1.0e-8)
+
+        obj_before = PC.eval_full(model0.obj_expr, x_sub)
+        obj_after = PC.eval_full(model.obj_expr, x)
+        @test isapprox(obj_after, obj_before; atol = 1.0e-8)
+    end
+end
+
+function parity_prepare_manager(lit1::PC.VarLit, lit2::PC.VarLit)
+    manager = PC.PropagationManager([1, 2])
+    PC.add_equivalence!(manager, lit1, lit2)
+    PC.update_sccs!(manager)
+    while PC.pop_substitution!(manager) !== nothing
+    end
+    return manager
+end
+
 @testset "count_builder_occurrences! ignores toggled-off builder entries" begin
     counts = Dict{PC.VarId, Int}()
     builder = PC.XorConstraintBuilder()
@@ -148,4 +180,439 @@ end
     @test parity_model.cons[3].par == falses(4)
     @test parity_model.cons[3].conj == parity_edge_matrix(4, [(2, 4), (3, 4)])
     @test !parity_model.cons[3].rhs
+end
+
+@testset "parity XOR branch eliminates stored parity pivots from xor-and rows" begin
+    pos_to_var_id = [1, 2, 3, 4]
+    var_id_to_pos = Dict(i => i for i in pos_to_var_id)
+    xor_pivot = PC.XorConstraint(BitVector([1, 1, 0, 0]), false)
+    xor_and_row = PC.XorConstraint(
+        BitVector([1, 0, 0, 0]),
+        parity_edge_matrix(4, [(3, 4)]),
+        true,
+    )
+    parity_model = PC.ParityModel(var_id_to_pos, pos_to_var_id, [xor_pivot, xor_and_row])
+    parity_model.pivots[1] = (1, nothing)
+
+    PC.substitute_pivots_in_conjunctive_terms!(parity_model)
+    PC.substitute_parity_pivots!(parity_model)
+
+    @test parity_model.cons[2].par == BitVector([0, 1, 0, 0])
+    @test parity_model.cons[2].conj == parity_edge_matrix(4, [(3, 4)])
+    @test parity_model.cons[2].rhs
+end
+
+@testset "fix_parities! rewrites even and odd parity-fixed variables" begin
+    vars = Dict{PC.VarId, PC.IntVar}(
+        1 => PC.IntVar(-2.0, 5.0),
+        2 => PC.IntVar(0.0, 3.0),
+    )
+    con = PC.Constraint(
+        parity_next_con_id(),
+        PC.QuadExpr(
+            ParityQuadTerm[(1.5, 1, 1), (-0.75, 1, 2)],
+            ParityLinTerm[(2.0, 1), (0.5, 2)];
+            constant = -1.0,
+        ),
+        -4.0,
+        6.0,
+    )
+    obj = PC.QuadExpr(
+        ParityQuadTerm[(1.25, 1, 2)],
+        ParityLinTerm[(-3.0, 1), (1.0, 2)];
+        constant = 2.0,
+    )
+
+    even_model0 = PC.QPModel(deepcopy(vars), [deepcopy(con)], deepcopy(obj), :min)
+    even_model = deepcopy(even_model0)
+    even_manager = PC.PropagationManager([1])
+    PC.fix_var!(even_manager, 1, false)
+
+    @test PC.fix_parities!(even_model, even_manager) == 1
+    @test even_model.vars[1] == PC.IntVar(-1.0, 2.0)
+    parity_eval_equivalent(even_model0, even_model, 1, 2.0, 0.0)
+
+    odd_model0 = PC.QPModel(deepcopy(vars), [deepcopy(con)], deepcopy(obj), :min)
+    odd_model = deepcopy(odd_model0)
+    odd_manager = PC.PropagationManager([1])
+    PC.fix_var!(odd_manager, 1, true)
+
+    @test PC.fix_parities!(odd_model, odd_manager) == 1
+    @test odd_model.vars[1] == PC.IntVar(-1.0, 2.0)
+    parity_eval_equivalent(odd_model0, odd_model, 1, 2.0, 1.0)
+end
+
+@testset "fix_parities! is a no-op when no fixed parity is available" begin
+    vars = Dict{PC.VarId, PC.IntVar}(1 => PC.IntVar(0.0, 4.0))
+    con = PC.Constraint(
+        parity_next_con_id(),
+        PC.QuadExpr(ParityQuadTerm[], ParityLinTerm[(1.0, 1)]),
+        0.0,
+        2.0,
+    )
+    model = PC.QPModel(vars, [con], parity_empty_objective(), :min)
+    model0 = deepcopy(model)
+    manager = PC.PropagationManager([1])
+
+    @test PC.fix_parities!(model, manager) == 0
+    @test model.vars == model0.vars
+    @test model.cons[1].lhs == model0.cons[1].lhs
+    @test model.cons[1].rhs == model0.cons[1].rhs
+    @test model.cons[1].qe.constant == model0.cons[1].qe.constant
+    @test collect(PC.vars(model.cons[1])) == collect(PC.vars(model0.cons[1]))
+end
+
+@testset "fix_parities! ignores parity fixings for absent variables" begin
+    vars = Dict{PC.VarId, PC.IntVar}(1 => PC.IntVar(0.0, 4.0))
+    model = PC.QPModel(vars, PC.Constraint[], parity_empty_objective(), :min)
+    model0 = deepcopy(model)
+    manager = PC.PropagationManager([99])
+    PC.fix_var!(manager, 99, true)
+
+    @test PC.fix_parities!(model, manager) == 0
+    @test model.vars == model0.vars
+    @test isempty(model.cons)
+end
+
+@testset "fix_parities! keeps singleton transformed variables in the model" begin
+    vars = Dict{PC.VarId, PC.IntVar}(1 => PC.IntVar(0.0, 1.0))
+    con = PC.Constraint(
+        parity_next_con_id(),
+        PC.QuadExpr(ParityQuadTerm[], ParityLinTerm[(1.0, 1)]),
+        1.0,
+        1.0,
+    )
+    model = PC.QPModel(vars, [con], parity_empty_objective(), :min)
+    manager = PC.PropagationManager([1])
+    PC.fix_var!(manager, 1, true)
+
+    @test PC.fix_parities!(model, manager) == 1
+    @test haskey(model.vars, 1)
+    @test model.vars[1] == PC.IntVar(0.0, 0.0)
+end
+
+@testset "fix_parity_patterns! introduces one binary variable for a positive SCC" begin
+    vars = Dict{PC.VarId, PC.IntVar}(
+        1 => PC.IntVar(0.0, 5.0),
+        2 => PC.IntVar(1.0, 6.0),
+    )
+    con = PC.Constraint(
+        parity_next_con_id(),
+        PC.QuadExpr(ParityQuadTerm[], ParityLinTerm[(1.0, 1), (1.0, 2)]),
+        0.0,
+        10.0,
+    )
+    obj = PC.QuadExpr(ParityQuadTerm[], ParityLinTerm[(1.0, 1), (-2.0, 2)])
+    model = PC.QPModel(vars, [con], obj, :min)
+    manager = parity_prepare_manager(PC.VarLit(1, false), PC.VarLit(2, false))
+
+    @test PC.fix_parity_patterns!(model, manager) == 2
+    @test haskey(model.vars, 3)
+    @test PC.is_binary(model.vars[3])
+    @test model.vars[1] == PC.IntVar(0.0, 2.0)
+    @test model.vars[2] == PC.IntVar(0.0, 3.0)
+    @test length(model.cons) == 5
+
+    pattern_cons = model.cons[2:end]
+    @test pattern_cons[1].lhs == 0.0
+    @test pattern_cons[1].rhs == 4.0
+    @test PC.get_lin_coeff(pattern_cons[1].qe, 1) == 1.0
+    @test PC.get_lin_coeff(pattern_cons[1].qe, 3) == 2.0
+    @test pattern_cons[2].lhs == -2.0
+    @test pattern_cons[2].rhs == 2.0
+    @test PC.get_lin_coeff(pattern_cons[2].qe, 1) == 1.0
+    @test PC.get_lin_coeff(pattern_cons[2].qe, 3) == -2.0
+    @test pattern_cons[3].lhs == 1.0
+    @test pattern_cons[3].rhs == 5.0
+    @test PC.get_lin_coeff(pattern_cons[3].qe, 2) == 1.0
+    @test PC.get_lin_coeff(pattern_cons[3].qe, 3) == 3.0
+    @test pattern_cons[4].lhs == -3.0
+    @test pattern_cons[4].rhs == 3.0
+    @test PC.get_lin_coeff(pattern_cons[4].qe, 2) == 1.0
+    @test PC.get_lin_coeff(pattern_cons[4].qe, 3) == -3.0
+
+    @test manager.lit_to_pos[PC.VarLit(3, false)] == manager.scc_pos_to_rep_pos[manager.rep_pos_to_scc_pos[manager.lit_to_pos[PC.VarLit(3, false)]]]
+    @test manager.lit_to_pos[PC.VarLit(3, true)] == manager.scc_pos_to_rep_pos[manager.rep_pos_to_scc_pos[manager.lit_to_pos[PC.VarLit(3, true)]]]
+    @test PC.fixed_value(manager, 3) === nothing
+end
+
+@testset "fix_parity_patterns! handles negated literals in the positive SCC" begin
+    vars = Dict{PC.VarId, PC.IntVar}(
+        1 => PC.IntVar(0.0, 5.0),
+        2 => PC.IntVar(1.0, 6.0),
+    )
+    con = PC.Constraint(
+        parity_next_con_id(),
+        PC.QuadExpr(ParityQuadTerm[], ParityLinTerm[(1.0, 1), (1.0, 2)]),
+        0.0,
+        10.0,
+    )
+    obj = PC.QuadExpr(ParityQuadTerm[], ParityLinTerm[(1.0, 1), (-2.0, 2)])
+    model = PC.QPModel(vars, [con], obj, :min)
+    model0 = deepcopy(model)
+    manager = parity_prepare_manager(PC.VarLit(1, false), PC.VarLit(2, true))
+
+    @test PC.fix_parity_patterns!(model, manager) == 2
+    @test haskey(model.vars, 3)
+    @test PC.is_binary(model.vars[3])
+    @test model.vars[1] == PC.IntVar(0.0, 2.0)
+    @test model.vars[2] == PC.IntVar(0.0, 3.0)
+    @test length(model.cons) == 5
+
+    pattern_cons = model.cons[2:end]
+    @test pattern_cons[3].lhs == 0.0
+    @test pattern_cons[3].rhs == 6.0
+    @test PC.get_lin_coeff(pattern_cons[3].qe, 2) == 1.0
+    @test PC.get_lin_coeff(pattern_cons[3].qe, 3) == 3.0
+    @test pattern_cons[4].lhs == -2.0
+    @test pattern_cons[4].rhs == 2.0
+    @test PC.get_lin_coeff(pattern_cons[4].qe, 2) == 1.0
+    @test PC.get_lin_coeff(pattern_cons[4].qe, 3) == -3.0
+
+    for z in (0.0, 1.0)
+        for y1 in 0.0:2.0
+            for y2 in 0.0:3.0
+                x = zeros(3)
+                x[1] = y1
+                x[2] = y2
+                x[3] = z
+
+                x0 = zeros(2)
+                x0[1] = 2.0 * y1 + z
+                x0[2] = 2.0 * y2 - z + 1.0
+
+                val_before = PC.eval_full(model0.cons[1].qe, x0)
+                val_after = PC.eval_full(model.cons[1].qe, x)
+                shift = model0.cons[1].lhs - model.cons[1].lhs
+                @test isapprox(val_after, val_before - shift; atol = 1.0e-8)
+
+                obj_before = PC.eval_full(model0.obj_expr, x0)
+                obj_after = PC.eval_full(model.obj_expr, x)
+                @test isapprox(obj_after, obj_before; atol = 1.0e-8)
+            end
+        end
+    end
+end
+
+@testset "fix_parity_patterns! is a no-op without an eligible SCC" begin
+    vars = Dict{PC.VarId, PC.IntVar}(1 => PC.IntVar(0.0, 5.0))
+    model = PC.QPModel(vars, PC.Constraint[], parity_empty_objective(), :min)
+    model0 = deepcopy(model)
+    manager = PC.PropagationManager([1])
+
+    @test PC.fix_parity_patterns!(model, manager) == 0
+    @test model.vars == model0.vars
+    @test isempty(model.cons)
+end
+
+@testset "parity_presolve! cleans up fixed parity singletons" begin
+    vars = Dict{PC.VarId, PC.IntVar}(1 => PC.IntVar(0.0, 1.0))
+    con = PC.Constraint(
+        parity_next_con_id(),
+        PC.QuadExpr(ParityQuadTerm[], ParityLinTerm[(1.0, 1)]),
+        1.0,
+        1.0,
+    )
+    model = PC.QPModel(vars, [con], parity_empty_objective(), :min)
+
+    out = PC.parity_presolve!(model)
+
+    @test out === model
+    @test !model.infeasible
+    @test haskey(model.vars, 1)
+    @test model.vars[1] == PC.IntVar(1.0, 1.0)
+    @test isempty(model.cons)
+end
+
+@testset "parity_presolve! scales constraints by gcd after parity rewrites" begin
+    vars = Dict{PC.VarId, PC.IntVar}(1 => PC.IntVar(0.0, 4.0))
+    con = PC.Constraint(
+        parity_next_con_id(),
+        PC.QuadExpr(ParityQuadTerm[(1.0, 1, 1)], ParityLinTerm[]),
+        0.0,
+        0.0,
+    )
+    model = PC.QPModel(vars, [con], parity_empty_objective(), :min)
+
+    PC.parity_presolve!(model)
+
+    @test !model.infeasible
+    @test isempty(model.vars)
+    @test isempty(model.cons)
+end
+
+@testset "parity_presolve! handles negative singleton constraints produced by rewrites" begin
+    vars = Dict{PC.VarId, PC.IntVar}(1 => PC.IntVar(0.0, 4.0))
+    con = PC.Constraint(
+        parity_next_con_id(),
+        PC.QuadExpr(ParityQuadTerm[(1.0, 1, 1)], ParityLinTerm[]),
+        0.0,
+        0.0,
+    )
+    model = PC.QPModel(vars, [con], parity_empty_objective(), :min)
+
+    PC.parity_presolve!(model)
+
+    @test !model.infeasible
+end
+
+@testset "parity_presolve_phase! returns whether a phase changed the QP model" begin
+    changed_vars = Dict{PC.VarId, PC.IntVar}(
+        1 => PC.IntVar(0.0, 5.0),
+        2 => PC.IntVar(1.0, 6.0),
+    )
+    changed_con = PC.Constraint(
+        parity_next_con_id(),
+        PC.QuadExpr(ParityQuadTerm[], ParityLinTerm[(1.0, 1), (1.0, 2)]),
+        4.0,
+        4.0,
+    )
+    changed_model = PC.QPModel(changed_vars, [changed_con], parity_empty_objective(), :min)
+    propagator = PC.PropagationManager(PC.VarId[])
+
+    changed_stats = PC.parity_presolve_phase!(changed_model, propagator)
+    @test changed_stats == (changed = true, fixed_parities = 0, pattern_rewritten_vars = 2)
+    @test !changed_model.infeasible
+    @test haskey(changed_model.vars, 3)
+    @test PC.is_binary(changed_model.vars[3])
+    @test changed_model.vars[1] == PC.IntVar(0.0, 2.0)
+    @test changed_model.vars[2] == PC.IntVar(0.0, 3.0)
+
+    stable_vars = Dict{PC.VarId, PC.IntVar}(
+        1 => PC.IntVar(0.0, 5.0),
+        2 => PC.IntVar(0.0, 5.0),
+    )
+    stable_con = PC.Constraint(
+        parity_next_con_id(),
+        PC.QuadExpr(ParityQuadTerm[], ParityLinTerm[(1.0, 1), (1.0, 2)]),
+        -Inf,
+        3.0,
+    )
+    stable_model = PC.QPModel(stable_vars, [stable_con], parity_empty_objective(), :min)
+
+    stable_stats = PC.parity_presolve_phase!(stable_model, propagator)
+    @test stable_stats == (changed = false, fixed_parities = 0, pattern_rewritten_vars = 0)
+    @test !stable_model.infeasible
+    @test stable_model.vars == stable_vars
+    @test length(stable_model.cons) == 1
+end
+
+@testset "parity_presolve! introduces parity patterns and reaches a fixed point" begin
+    vars = Dict{PC.VarId, PC.IntVar}(
+        1 => PC.IntVar(0.0, 5.0),
+        2 => PC.IntVar(1.0, 6.0),
+    )
+    con = PC.Constraint(
+        parity_next_con_id(),
+        PC.QuadExpr(ParityQuadTerm[], ParityLinTerm[(1.0, 1), (1.0, 2)]),
+        4.0,
+        4.0,
+    )
+    model = PC.QPModel(vars, [con], parity_empty_objective(), :min)
+
+    PC.parity_presolve!(model)
+
+    @test !model.infeasible
+    @test haskey(model.vars, 3)
+    @test PC.is_binary(model.vars[3])
+    @test model.vars[1] == PC.IntVar(0.0, 2.0)
+    @test model.vars[2] == PC.IntVar(0.0, 3.0)
+    @test length(model.cons) == 5
+
+    parity_model = PC.build_parity_model(model)
+    propagator = PC.PropagationManager(parity_model.pos_to_var_id)
+    PC.reformulate_bipartite_cons!(parity_model)
+    PC.propagate!(parity_model, propagator)
+    @test !parity_model.infeasible
+end
+
+@testset "parity_presolve_phase! reuses one propagator across multiple phases" begin
+    vars = Dict{PC.VarId, PC.IntVar}(
+        1 => PC.IntVar(0.0, 5.0),
+        2 => PC.IntVar(1.0, 6.0),
+    )
+    con = PC.Constraint(
+        parity_next_con_id(),
+        PC.QuadExpr(ParityQuadTerm[], ParityLinTerm[(1.0, 1), (1.0, 2)]),
+        4.0,
+        4.0,
+    )
+    model = PC.QPModel(vars, [con], parity_empty_objective(), :min)
+    propagator = PC.PropagationManager(PC.VarId[])
+
+    phase1_stats = PC.parity_presolve_phase!(model, propagator)
+    @test phase1_stats == (changed = true, fixed_parities = 0, pattern_rewritten_vars = 2)
+    @test haskey(model.vars, 3)
+    @test haskey(propagator.lit_to_pos, PC.VarLit(3, false))
+    @test haskey(propagator.lit_to_pos, PC.VarLit(3, true))
+    first_manager_size = length(propagator.pos_to_lit)
+
+    phase2_stats = PC.parity_presolve_phase!(model, propagator)
+    @test phase2_stats == (changed = false, fixed_parities = 0, pattern_rewritten_vars = 0)
+    @test !model.infeasible
+    @test length(propagator.pos_to_lit) == first_manager_size
+    @test haskey(propagator.lit_to_pos, PC.VarLit(3, false))
+end
+
+@testset "parity_presolve_phase! reports fixed parity counts" begin
+    vars = Dict{PC.VarId, PC.IntVar}(1 => PC.IntVar(0.0, 4.0))
+    con = PC.Constraint(
+        parity_next_con_id(),
+        PC.QuadExpr(ParityQuadTerm[(1.0, 1, 1)], ParityLinTerm[]),
+        0.0,
+        0.0,
+    )
+    model = PC.QPModel(vars, [con], parity_empty_objective(), :min)
+    propagator = PC.PropagationManager(PC.VarId[])
+
+    stats = PC.parity_presolve_phase!(model, propagator)
+
+    @test stats == (changed = true, fixed_parities = 1, pattern_rewritten_vars = 0)
+    @test !model.infeasible
+    @test model.vars[1] == PC.IntVar(0.0, 2.0)
+end
+
+@testset "parity_presolve! marks models infeasible when parity propagation contradicts" begin
+    vars = Dict{PC.VarId, PC.IntVar}(1 => PC.IntVar(0.0, 1.0))
+    con1 = PC.Constraint(
+        parity_next_con_id(),
+        PC.QuadExpr(ParityQuadTerm[], ParityLinTerm[(1.0, 1)]),
+        0.0,
+        0.0,
+    )
+    con2 = PC.Constraint(
+        parity_next_con_id(),
+        PC.QuadExpr(ParityQuadTerm[], ParityLinTerm[(1.0, 1)]),
+        1.0,
+        1.0,
+    )
+    model = PC.QPModel(vars, [con1, con2], parity_empty_objective(), :min)
+
+    PC.parity_presolve!(model)
+
+    @test model.infeasible
+end
+
+@testset "parity_presolve! is a no-op without parity structure" begin
+    vars = Dict{PC.VarId, PC.IntVar}(
+        1 => PC.IntVar(0.0, 5.0),
+        2 => PC.IntVar(0.0, 5.0),
+    )
+    con = PC.Constraint(
+        parity_next_con_id(),
+        PC.QuadExpr(ParityQuadTerm[], ParityLinTerm[(1.0, 1), (1.0, 2)]),
+        -Inf,
+        3.0,
+    )
+    model = PC.QPModel(vars, [con], parity_empty_objective(), :min)
+    model0 = deepcopy(model)
+
+    PC.parity_presolve!(model)
+
+    @test !model.infeasible
+    @test model.vars == model0.vars
+    @test length(model.cons) == 1
+    @test model.cons[1].lhs == model0.cons[1].lhs
+    @test model.cons[1].rhs == model0.cons[1].rhs
+    @test collect(PC.vars(model.cons[1])) == collect(PC.vars(model0.cons[1]))
 end

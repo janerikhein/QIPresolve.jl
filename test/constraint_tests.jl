@@ -104,3 +104,118 @@ end
         @test isapprox(val_after, val_before - shift_lhs; atol = 1.0e-8)
     end
 end
+
+@testset "Constraint is_integer" begin
+    integral_con = PC.Constraint(
+        next_con_id(),
+        PC.QuadExpr(QuadTerm[(4.0, 1, 1), (6.0, 1, 2)], LinTerm[(2.0, 1), (-3.0, 2)]),
+        -5.0,
+        7.0,
+    )
+    @test PC.is_integer(integral_con)
+
+    fractional_linear = PC.Constraint(
+        next_con_id(),
+        PC.QuadExpr(QuadTerm[(4.0, 1, 1)], LinTerm[(1.5, 1)]),
+        -2.0,
+        3.0,
+    )
+    @test !PC.is_integer(fractional_linear)
+
+    fractional_diagonal = PC.Constraint(
+        next_con_id(),
+        PC.QuadExpr(QuadTerm[(2.5, 1, 1)], LinTerm[]),
+        -2.0,
+        3.0,
+    )
+    @test !PC.is_integer(fractional_diagonal)
+
+    odd_bilinear = PC.Constraint(
+        next_con_id(),
+        PC.QuadExpr(QuadTerm[(3.0, 1, 2)], LinTerm[]),
+        -2.0,
+        3.0,
+    )
+    @test !PC.is_integer(odd_bilinear)
+
+    fractional_normalized_bound = PC.Constraint(
+        next_con_id(),
+        PC.QuadExpr(QuadTerm[], LinTerm[(1.0, 1)]; constant = 0.5),
+        1.0,
+        3.0,
+    )
+    @test !PC.is_integer(fractional_normalized_bound)
+
+    normalized_integer_bounds = PC.Constraint(
+        next_con_id(),
+        PC.QuadExpr(QuadTerm[], LinTerm[(1.0, 1)]; constant = 0.5),
+        0.5,
+        1.5,
+    )
+    @test PC.is_integer(normalized_integer_bounds)
+
+    infinite_bound = PC.Constraint(
+        next_con_id(),
+        PC.QuadExpr(QuadTerm[(2.0, 1, 1)], LinTerm[(1.0, 1)]),
+        -Inf,
+        4.0,
+    )
+    @test PC.is_integer(infinite_bound)
+end
+
+@testset "Constraint scale_gcd!" begin
+    con = PC.Constraint(
+        next_con_id(),
+        PC.QuadExpr(
+            QuadTerm[(6.0, 1, 1), (8.0, 1, 2), (10.0, 2, 2)],
+            LinTerm[(4.0, 1), (-2.0, 2)];
+            constant = 2.0,
+        ),
+        4.0,
+        18.0,
+    )
+
+    @test PC.scale_gcd!(con)
+    @test con.qe.constant == 0.0
+    @test con.lhs == 1.0
+    @test con.rhs == 8.0
+    @test PC.get_quad_coeff(con.qe, 1, 1) == 3.0
+    @test PC.get_quad_coeff(con.qe, 1, 2) == 4.0
+    @test PC.get_quad_coeff(con.qe, 2, 2) == 5.0
+    @test PC.get_lin_coeff(con.qe, 1) == 2.0
+    @test PC.get_lin_coeff(con.qe, 2) == -1.0
+
+    fractional = PC.Constraint(
+        next_con_id(),
+        PC.QuadExpr(QuadTerm[(4.0, 1, 1)], LinTerm[(1.5, 1)]; constant = 1.0),
+        -2.0,
+        3.0,
+    )
+    @test !PC.scale_gcd!(fractional)
+    @test fractional.qe.constant == 0.0
+    @test fractional.lhs == -3.0
+    @test fractional.rhs == 2.0
+    @test PC.get_quad_coeff(fractional.qe, 1, 1) == 4.0
+    @test PC.get_lin_coeff(fractional.qe, 1) == 1.5
+
+    unit_gcd = PC.Constraint(
+        next_con_id(),
+        PC.QuadExpr(QuadTerm[(3.0, 1, 1), (2.0, 1, 2)], LinTerm[(5.0, 1)]),
+        -1.0,
+        4.0,
+    )
+    @test !PC.scale_gcd!(unit_gcd)
+    @test PC.get_quad_coeff(unit_gcd.qe, 1, 1) == 3.0
+    @test PC.get_quad_coeff(unit_gcd.qe, 1, 2) == 2.0
+    @test PC.get_lin_coeff(unit_gcd.qe, 1) == 5.0
+
+    infinite_bound = PC.Constraint(
+        next_con_id(),
+        PC.QuadExpr(QuadTerm[(4.0, 1, 1)], LinTerm[(2.0, 1)]),
+        -Inf,
+        6.0,
+    )
+    @test PC.scale_gcd!(infinite_bound)
+    @test infinite_bound.lhs == -Inf
+    @test infinite_bound.rhs == 3.0
+end

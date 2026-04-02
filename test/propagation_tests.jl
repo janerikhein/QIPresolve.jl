@@ -1,6 +1,16 @@
 using Test
-using Graphs: has_edge, ne, nv, topological_sort
+using Graphs: has_edge, inneighbors, ne, nv, outneighbors, topological_sort
 import QIPresolve.PresolvingCore as PC
+
+function prepare_substitution_manager()
+    manager = PC.PropagationManager([1, 2, 3])
+    PC.add_equivalence!(manager, PC.VarLit(1, false), PC.VarLit(2, false))
+    PC.add_implication!(manager, PC.VarLit(1, false), PC.VarLit(3, true))
+    PC.add_implication!(manager, PC.VarLit(3, false), PC.VarLit(1, false))
+    PC.update_sccs!(manager)
+    drain_substitutions!(manager)
+    return manager
+end
 
 function drain_fixings!(manager)
     items = Tuple{Int, Bool}[]
@@ -82,6 +92,29 @@ end
     @test PC.pop_substitution!(manager) === nothing
 end
 
+@testset "ensure_literals! appends fresh singleton literals only for missing vars" begin
+    manager = PC.PropagationManager([1])
+
+    @test PC.ensure_literals!(manager, [1, 2, 3]) === manager
+    @test manager.nvars == 3
+    @test manager.nreps == 6
+    @test nv(manager.graph) == 6
+    @test ne(manager.graph) == 0
+    @test manager.lit_to_pos[PC.VarLit(1, false)] == 1
+    @test manager.lit_to_pos[PC.VarLit(1, true)] == 2
+    @test manager.lit_to_pos[PC.VarLit(2, false)] == 3
+    @test manager.lit_to_pos[PC.VarLit(2, true)] == 4
+    @test manager.lit_to_pos[PC.VarLit(3, false)] == 5
+    @test manager.lit_to_pos[PC.VarLit(3, true)] == 6
+
+    for pos in 1:6
+        @test manager.parent_pos[pos] == pos
+        @test manager.rep_pos_to_scc_pos[pos] == pos
+        @test manager.scc_pos_to_rep_pos[pos] == pos
+        @test manager.lit_labels[pos] == PC.UNDEF
+    end
+end
+
 @testset "Label helpers" begin
     manager = PC.PropagationManager([1])
 
@@ -118,6 +151,151 @@ end
     manager2 = PC.PropagationManager([1])
     @test PC.union_reps!(manager2, [1, 2]) == 1
     @test PC.pop_substitution!(manager2) === nothing
+end
+
+@testset "substitute_scc_by_new_var! swaps SCC representatives to a fresh variable" begin
+    manager = prepare_substitution_manager()
+
+    pos_scc = manager.rep_pos_to_scc_pos[PC.repr!(manager, manager.lit_to_pos[PC.VarLit(1, false)])]
+    neg_scc = manager.rep_pos_to_scc_pos[PC.repr!(manager, manager.lit_to_pos[PC.VarLit(1, true)])]
+    pos3_scc = manager.rep_pos_to_scc_pos[PC.repr!(manager, manager.lit_to_pos[PC.VarLit(3, false)])]
+    neg3_scc = manager.rep_pos_to_scc_pos[PC.repr!(manager, manager.lit_to_pos[PC.VarLit(3, true)])]
+    pos_component = [manager.lit_to_pos[PC.VarLit(1, false)], manager.lit_to_pos[PC.VarLit(2, false)]]
+    neg_component = [manager.lit_to_pos[PC.VarLit(1, true)], manager.lit_to_pos[PC.VarLit(2, true)]]
+    split_positions = vcat(pos_component, neg_component)
+
+    @test has_edge(manager.graph, pos_scc, neg3_scc)
+    @test has_edge(manager.graph, pos3_scc, pos_scc)
+    @test has_edge(manager.graph, pos3_scc, neg_scc)
+    @test has_edge(manager.graph, neg_scc, neg3_scc)
+
+    old_ne = ne(manager.graph)
+    old_nv = nv(manager.graph)
+    old_nreps = manager.nreps
+
+    @test PC.substitute_scc_by_new_var!(manager, 1, 10) === manager
+    @test manager.nvars == 4
+    @test manager.nreps == old_nreps + length(split_positions)
+    @test nv(manager.graph) == old_nv + length(split_positions)
+    @test ne(manager.graph) == old_ne
+    @test manager.rep_pos_to_scc_pos[manager.lit_to_pos[PC.VarLit(10, false)]] == pos_scc
+    @test manager.rep_pos_to_scc_pos[manager.lit_to_pos[PC.VarLit(10, true)]] == neg_scc
+    @test manager.scc_pos_to_rep_pos[pos_scc] == manager.lit_to_pos[PC.VarLit(10, false)]
+    @test manager.scc_pos_to_rep_pos[neg_scc] == manager.lit_to_pos[PC.VarLit(10, true)]
+    @test PC.fixed_value(manager, 10) === nothing
+    @test isempty(drain_substitutions!(manager))
+    @test isempty(drain_fixings!(manager))
+
+    @test has_edge(manager.graph, pos_scc, neg3_scc)
+    @test has_edge(manager.graph, pos3_scc, pos_scc)
+    @test has_edge(manager.graph, pos3_scc, neg_scc)
+    @test has_edge(manager.graph, neg_scc, neg3_scc)
+
+    isolated_sccs = Int[]
+    for pos in split_positions
+        @test manager.parent_pos[pos] == pos
+        scc = manager.rep_pos_to_scc_pos[pos]
+        push!(isolated_sccs, scc)
+        @test scc > old_nreps
+        @test manager.scc_pos_to_rep_pos[scc] == pos
+        @test isempty(outneighbors(manager.graph, scc))
+        @test isempty(inneighbors(manager.graph, scc))
+    end
+    @test length(unique(isolated_sccs)) == length(split_positions)
+
+    @test PC.repr!(manager, manager.lit_to_pos[PC.VarLit(1, false)]) == manager.lit_to_pos[PC.VarLit(1, false)]
+    @test PC.repr!(manager, manager.lit_to_pos[PC.VarLit(2, false)]) == manager.lit_to_pos[PC.VarLit(2, false)]
+    @test PC.repr!(manager, manager.lit_to_pos[PC.VarLit(1, true)]) == manager.lit_to_pos[PC.VarLit(1, true)]
+    @test PC.repr!(manager, manager.lit_to_pos[PC.VarLit(2, true)]) == manager.lit_to_pos[PC.VarLit(2, true)]
+end
+
+@testset "substitute_scc_by_new_var! enforces preconditions" begin
+    present_vid_manager = prepare_substitution_manager()
+    @test_throws AssertionError PC.substitute_scc_by_new_var!(present_vid_manager, 1, 3)
+
+    labeled_manager = prepare_substitution_manager()
+    pos_scc = labeled_manager.rep_pos_to_scc_pos[PC.repr!(labeled_manager, labeled_manager.lit_to_pos[PC.VarLit(1, false)])]
+    PC.set_lit_label!(labeled_manager, pos_scc, PC.TRUE)
+    @test_throws AssertionError PC.substitute_scc_by_new_var!(labeled_manager, 1, 10)
+
+    singleton_manager = PC.PropagationManager([1])
+    @test_throws AssertionError PC.substitute_scc_by_new_var!(singleton_manager, 1, 10)
+
+    collapsed_manager = PC.PropagationManager([1])
+    PC.union_reps!(collapsed_manager, [1, 2])
+    @test_throws AssertionError PC.substitute_scc_by_new_var!(collapsed_manager, 1, 10)
+
+    queued_manager = prepare_substitution_manager()
+    PC.enqueue_substitution!(queued_manager, 99)
+    @test_throws AssertionError PC.substitute_scc_by_new_var!(queued_manager, 1, 10)
+end
+
+@testset "finalize_phase! strips labeled SCCs and preserves unlabeled structure" begin
+    manager = PC.PropagationManager([1, 2, 3, 4])
+    PC.add_equivalence!(manager, PC.VarLit(1, false), PC.VarLit(2, false))
+    PC.update_sccs!(manager)
+    @test Set(drain_substitutions!(manager)) == Set([(2, 1, false)])
+
+    PC.add_implication!(manager, PC.VarLit(3, false), PC.VarLit(4, false))
+    PC.add_implication!(manager, PC.VarLit(3, false), PC.VarLit(1, false))
+    PC.add_implication!(manager, PC.VarLit(1, false), PC.VarLit(4, false))
+    pos3_scc = manager.rep_pos_to_scc_pos[PC.repr!(manager, manager.lit_to_pos[PC.VarLit(3, false)])]
+    pos4_scc = manager.rep_pos_to_scc_pos[PC.repr!(manager, manager.lit_to_pos[PC.VarLit(4, false)])]
+    neg4_scc = manager.rep_pos_to_scc_pos[PC.repr!(manager, manager.lit_to_pos[PC.VarLit(4, true)])]
+    neg3_scc = manager.rep_pos_to_scc_pos[PC.repr!(manager, manager.lit_to_pos[PC.VarLit(3, true)])]
+
+    pos12_rep = PC.repr!(manager, manager.lit_to_pos[PC.VarLit(1, false)])
+    neg12_rep = PC.repr!(manager, manager.lit_to_pos[PC.VarLit(1, true)])
+    pos12_scc = manager.rep_pos_to_scc_pos[pos12_rep]
+    neg12_scc = manager.rep_pos_to_scc_pos[neg12_rep]
+    @test has_edge(manager.graph, pos3_scc, pos4_scc)
+    @test has_edge(manager.graph, neg4_scc, neg3_scc)
+    @test has_edge(manager.graph, pos3_scc, pos12_scc)
+    @test has_edge(manager.graph, pos12_scc, pos4_scc)
+
+    PC.fix_var!(manager, 1, true)
+    @test Set(drain_fixings!(manager)) == Set([(1, true)])
+
+    old_nreps = manager.nreps
+    @test PC.finalize_phase!(manager) === manager
+    @test isempty(drain_fixings!(manager))
+    @test isempty(drain_substitutions!(manager))
+    @test manager.nreps == old_nreps + 2
+    @test nv(manager.graph) == manager.nreps
+    @test !has_edge(manager.graph, pos3_scc, pos12_scc)
+    @test !has_edge(manager.graph, pos12_scc, pos4_scc)
+    @test has_edge(manager.graph, pos3_scc, pos4_scc)
+    @test has_edge(manager.graph, neg4_scc, neg3_scc)
+
+    @test manager.lit_labels[pos12_scc] == PC.UNDEF
+    @test manager.lit_labels[neg12_scc] == PC.UNDEF
+
+    pos_component = [manager.lit_to_pos[PC.VarLit(1, false)], manager.lit_to_pos[PC.VarLit(2, false)]]
+    neg_component = [manager.lit_to_pos[PC.VarLit(1, true)], manager.lit_to_pos[PC.VarLit(2, true)]]
+    for pos in vcat(pos_component, neg_component)
+        @test manager.parent_pos[pos] == pos
+        scc = manager.rep_pos_to_scc_pos[pos]
+        @test manager.scc_pos_to_rep_pos[scc] == pos
+        @test manager.lit_labels[scc] == PC.UNDEF
+    end
+    @test length(unique(manager.rep_pos_to_scc_pos[pos] for pos in pos_component)) == 2
+    @test length(unique(manager.rep_pos_to_scc_pos[pos] for pos in neg_component)) == 2
+end
+
+@testset "finalize_phase! and ensure_literals! keep the manager reusable across phases" begin
+    manager = PC.PropagationManager([1])
+    PC.fix_var!(manager, 1, true)
+    @test Set(drain_fixings!(manager)) == Set([(1, true)])
+    PC.finalize_phase!(manager)
+
+    @test PC.fixed_value(manager, 1) === nothing
+    @test PC.ensure_literals!(manager, [1, 2]) === manager
+    PC.add_equivalence!(manager, PC.VarLit(1, false), PC.VarLit(2, false))
+    PC.update!(manager)
+
+    @test Set(drain_substitutions!(manager)) == Set([(2, 1, false)])
+    @test PC.fixed_value(manager, 1) === nothing
+    @test PC.fixed_value(manager, 2) === nothing
 end
 
 @testset "Edge and implication builders" begin

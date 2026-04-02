@@ -5,43 +5,36 @@ import QIPresolve as QIP
 
 PC = QIP.PresolvingCore
 
-moi = QIP.load_moi_model("large.mof.json")
-
-
+moi = QIP.load_moi_model("large2.mof.json")
 qp_model_builder = QIP.from_moi(moi)
-
 qp_model = QIP.build_model(qp_model_builder)
+PC.fix_vars!(qp_model)
 
-QIP.fix_vars!(qp_model)
+log_domain_sum(model::PC.QPModel) = sum(log(var.ub - var.lb + 1) for var in values(model.vars))
 
+println("nvars=$(length(qp_model.vars)) ncons=$(length(qp_model.cons))")
+println("log_domain_sum_before = $(log_domain_sum(qp_model))")
 
-xor_model = PC.build_parity_model(qp_model)
+propagator = PC.PropagationManager(Int[])
+phase_idx = 0
 
+println(qp_model)
 
-prop = PC.PropagationManager(collect(keys(xor_model.var_id_to_pos)))
+while !qp_model.infeasible
+    global phase_idx += 1
+    stats = PC.parity_presolve_phase!(qp_model, propagator)
+    PC.scale_constraints_gcd!(qp_model)
+    println(
+        "phase $phase_idx: changed=$(stats.changed) " *
+        "fixed_parities=$(stats.fixed_parities) " *
+        "pattern_rewritten_vars=$(stats.pattern_rewritten_vars) " *
+        "infeasible=$(qp_model.infeasible) " *
+        "nvars=$(length(qp_model.vars)) ncons=$(length(qp_model.cons))"
+    )
 
-PC.reformulate_bipartite_cons!(xor_model)
+    stats.changed || break
+end
 
-
-QIP.PresolvingCore.propagate!(xor_model, prop)
-
-
-
-#PC.gauss_jordan_xor!(xor_model)
-
-#PC.substitute_pivots_in_conjunctive_terms!(xor_model)
-#PC.cleanup!(xor_model)
-#PC.substitute_parity_pivots!(xor_model)
-
-
-#PC.gauss_jordan_xor_and!(xor_model)
-#changed = falses(length(xor_model.cons))
-#begin
-#    substitution = PC.pop_substitution!(prop)
-#    #substitution === nothing && break
-#    vid, substid, neg = substitution
-#end
-#PC._substitute_var_rows!(changed, xor_model, vid, substid, neg)
-
-
-
+println(qp_model)
+println("log_domain_sum_after = $(log_domain_sum(qp_model))")
+println("final model infeasible = $(qp_model.infeasible)")

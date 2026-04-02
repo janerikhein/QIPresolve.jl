@@ -110,31 +110,79 @@ function build_parity_model(model::QPModel)
 end
 
 # TODO: add postsolve stack structure here
-function parity_presolve!(model::QPModel)
-    propagator = PropagationManager(VarId[])
+function parity_presolve_phase!(model::QPModel, propagator::PropagationManager)
+    model.infeasible && return (changed = false, fixed_parities = 0, pattern_rewritten_vars = 0)
 
-    while true
-        parity_model = build_parity_model(model)
-        propagator = PropagationManager(parity_model.pos_to_var_id)
-        reformulate_bipartite_cons!(parity_model)
-        propagate!(parity_model, propagator)
+    fix_vars!(model)
+    model.infeasible && return (changed = false, fixed_parities = 0, pattern_rewritten_vars = 0)
 
-        while has_unpivoted_con(parity_model)
-            if has_unpivoted_xor_con(parity_model)
-                gauss_jordan_xor!(parity_model)
-                propagate!(parity_model, propagator)
-                substitute_pivots_in_conjunctive_terms!(parity_model)
-            else
-                gauss_jordan_xor_and!(parity_model)
-                propagate!(parity_model, propagator)
-            end
-        end
-
-        parities_fixed = fix_parities!(model, propagator)
-        patterns_added = fix_parity_patterns!(model, propagator)
-
-        parities_fixed || patterns_added || break
+    if isempty(model.vars)
+        finalize_phase!(propagator)
+        return (changed = false, fixed_parities = 0, pattern_rewritten_vars = 0)
     end
 
-    add_binary_implications!(model, propagator)
+    parity_model = build_parity_model(model)
+    if isempty(parity_model.pos_to_var_id) || isempty(parity_model.cons)
+        finalize_phase!(propagator)
+        return (changed = false, fixed_parities = 0, pattern_rewritten_vars = 0)
+    end
+
+    ensure_literals!(propagator, parity_model.pos_to_var_id)
+    reformulate_bipartite_cons!(parity_model)
+    propagate!(parity_model, propagator)
+    if parity_model.infeasible
+        model.infeasible = true
+        return (changed = false, fixed_parities = 0, pattern_rewritten_vars = 0)
+    end
+
+    while has_unpivoted_con(parity_model)
+        if has_unpivoted_xor_con(parity_model)
+            gauss_jordan_xor!(parity_model)
+            propagate!(parity_model, propagator)
+            if parity_model.infeasible
+                model.infeasible = true
+                return (changed = false, fixed_parities = 0, pattern_rewritten_vars = 0)
+            end
+            substitute_pivots_in_conjunctive_terms!(parity_model)
+            substitute_parity_pivots!(parity_model)
+        else
+            gauss_jordan_xor_and!(parity_model)
+            propagate!(parity_model, propagator)
+            if parity_model.infeasible
+                model.infeasible = true
+                return (changed = false, fixed_parities = 0, pattern_rewritten_vars = 0)
+            end
+        end
+    end
+
+    parities_fixed = fix_parities!(model, propagator)
+    pattern_rewritten_vars = fix_parity_patterns!(model, propagator)
+    changed = parities_fixed > 0 || pattern_rewritten_vars > 0
+
+    if changed
+        fix_vars!(model)
+        model.infeasible && return (changed = false, fixed_parities = parities_fixed, pattern_rewritten_vars = pattern_rewritten_vars)
+    end
+
+    finalize_phase!(propagator)
+    return (changed = changed, fixed_parities = parities_fixed, pattern_rewritten_vars = pattern_rewritten_vars)
+end
+
+function parity_presolve!(model::QPModel)
+    model.infeasible && return model
+
+    propagator = PropagationManager(VarId[])
+    scale_constraints_gcd!(model)
+    while true
+        stats = parity_presolve_phase!(model, propagator)
+        model.infeasible && break
+
+        scale_constraints_gcd!(model)
+        model.infeasible && break
+
+        !stats.changed && break
+    end
+
+    #add_binary_implications!(model, propagator)
+    return model
 end

@@ -45,6 +45,8 @@ mutable struct PropagationManager
     graph::DiGraph 
 end
 
+const ParityPropagator = PropagationManager
+
 """
     PropagationManager(var_ids::Vector{VarId}) -> PropagationManager
 
@@ -99,6 +101,48 @@ function PropagationManager(var_ids::Vector{VarId})
         seen_substitutions,
         graph,
     )
+end
+
+"""
+    ensure_literals!(manager::PropagationManager, var_ids::Vector{VarId}) -> PropagationManager
+
+Ensure that every variable id in `var_ids` has positive and negated literals
+registered in `manager`.
+
+Missing variables are appended as isolated singleton SCCs with `UNDEF` labels.
+Existing literals are left unchanged.
+"""
+function ensure_literals!(manager::PropagationManager, var_ids::Vector{VarId})
+    for vid in var_ids
+        haskey(manager.lit_to_pos, VarLit(vid, false)) && continue
+
+        pos_pos = length(manager.pos_to_lit) + 1
+        neg_pos = pos_pos + 1
+
+        push!(manager.pos_to_lit, VarLit(vid, false))
+        push!(manager.pos_to_lit, VarLit(vid, true))
+        manager.lit_to_pos[VarLit(vid, false)] = pos_pos
+        manager.lit_to_pos[VarLit(vid, true)] = neg_pos
+
+        push!(manager.parent_pos, pos_pos)
+        push!(manager.parent_pos, neg_pos)
+
+        pos_scc = manager.nreps + 1
+        neg_scc = manager.nreps + 2
+        manager.rep_pos_to_scc_pos[pos_pos] = pos_scc
+        manager.rep_pos_to_scc_pos[neg_pos] = neg_scc
+        push!(manager.scc_pos_to_rep_pos, pos_pos)
+        push!(manager.scc_pos_to_rep_pos, neg_pos)
+        push!(manager.lit_labels, UNDEF)
+        push!(manager.lit_labels, UNDEF)
+        Graphs.add_vertex!(manager.graph)
+        Graphs.add_vertex!(manager.graph)
+
+        manager.nvars += 1
+        manager.nreps += 2
+    end
+
+    return manager
 end
 
 
@@ -454,6 +498,181 @@ Returns `nothing` if no pending fixing is available.
 function pop_fixing!(manager::PropagationManager)
     isempty(manager.pending_fixings) && return nothing
     return popfirst!(manager.pending_fixings)
+end
+
+"""
+    fixed_value(manager::PropagationManager, vid::VarId) -> Union{Nothing, Bool}
+
+Return the fixed Boolean value implied for `vid`, if any.
+
+This inspects the current labels of the positive and negated literal SCCs for
+`vid`. Returns `true` when `vid` is fixed true, `false` when fixed false, and
+`nothing` when no fixing is currently implied or `vid` is unknown to the
+manager.
+"""
+function fixed_value(manager::PropagationManager, vid::VarId)
+    pos_pos = get(manager.lit_to_pos, VarLit(vid, false), 0)
+    pos_pos == 0 && return nothing
+
+    neg_pos = manager.lit_to_pos[VarLit(vid, true)]
+    pos_rep = repr!(manager, pos_pos)
+    neg_rep = repr!(manager, neg_pos)
+    pos_scc = manager.rep_pos_to_scc_pos[pos_rep]
+    neg_scc = manager.rep_pos_to_scc_pos[neg_rep]
+    pos_label = manager.lit_labels[pos_scc]
+    neg_label = manager.lit_labels[neg_scc]
+
+    if pos_label == TRUE && neg_label == FALSE
+        return true
+    elseif pos_label == FALSE && neg_label == TRUE
+        return false
+    end
+
+    return nothing
+end
+
+function _component_size(manager::PropagationManager, rep_pos::Int)
+    return count(pos -> repr!(manager, pos) == rep_pos, eachindex(manager.pos_to_lit))
+end
+
+function _rep_component_positions(manager::PropagationManager, rep_pos::Int)
+    return [pos for pos in eachindex(manager.pos_to_lit) if repr!(manager, pos) == rep_pos]
+end
+
+"""
+    substitute_scc_by_new_var!(
+        manager::PropagationManager,
+        scc_vid::VarId,
+        new_vid::VarId,
+    ) -> PropagationManager
+
+Replace the current positive and negative SCCs of `scc_vid` by fresh literals
+for `new_vid`.
+
+The current SCC ids of `scc_vid` are reused for `new_vid`. Every old literal in
+the substituted positive and negative components is split back into its own
+singleton SCC, and those fresh SCC nodes are left isolated in the graph.
+
+The affected SCCs must both be unlabeled, have size at least two, and the
+manager must not already contain `new_vid`.
+"""
+function substitute_scc_by_new_var!(
+    manager::PropagationManager,
+    scc_vid::VarId,
+    new_vid::VarId,
+)
+    @assert !haskey(manager.lit_to_pos, VarLit(new_vid, false))
+    @assert !haskey(manager.lit_to_pos, VarLit(new_vid, true))
+    @assert isempty(manager.pending_substitutions)
+
+    pos_pos = manager.lit_to_pos[VarLit(scc_vid, false)]
+    neg_pos = manager.lit_to_pos[VarLit(scc_vid, true)]
+    pos_rep = repr!(manager, pos_pos)
+    neg_rep = repr!(manager, neg_pos)
+    @assert pos_rep != neg_rep
+
+    pos_scc = manager.rep_pos_to_scc_pos[pos_rep]
+    neg_scc = manager.rep_pos_to_scc_pos[neg_rep]
+    @assert pos_scc != neg_scc
+    @assert manager.lit_labels[pos_scc] == UNDEF
+    @assert manager.lit_labels[neg_scc] == UNDEF
+    pos_component = [pos for pos in eachindex(manager.pos_to_lit) if repr!(manager, pos) == pos_rep]
+    neg_component = [pos for pos in eachindex(manager.pos_to_lit) if repr!(manager, pos) == neg_rep]
+    @assert length(pos_component) >= 2
+    @assert length(neg_component) >= 2
+
+    new_pos_rep = length(manager.pos_to_lit) + 1
+    new_neg_rep = new_pos_rep + 1
+    old_nreps = manager.nreps
+    split_positions = vcat(pos_component, neg_component)
+
+    push!(manager.pos_to_lit, VarLit(new_vid, false))
+    push!(manager.pos_to_lit, VarLit(new_vid, true))
+    manager.lit_to_pos[VarLit(new_vid, false)] = new_pos_rep
+    manager.lit_to_pos[VarLit(new_vid, true)] = new_neg_rep
+    push!(manager.parent_pos, new_pos_rep)
+    push!(manager.parent_pos, new_neg_rep)
+
+    for pos in split_positions
+        manager.parent_pos[pos] = pos
+    end
+
+    manager.nvars += 1
+    manager.rep_pos_to_scc_pos[new_pos_rep] = pos_scc
+    manager.rep_pos_to_scc_pos[new_neg_rep] = neg_scc
+    manager.scc_pos_to_rep_pos[pos_scc] = new_pos_rep
+    manager.scc_pos_to_rep_pos[neg_scc] = new_neg_rep
+
+    next_scc = old_nreps + 1
+    for pos in split_positions
+        manager.rep_pos_to_scc_pos[pos] = next_scc
+        push!(manager.scc_pos_to_rep_pos, pos)
+        push!(manager.lit_labels, UNDEF)
+        Graphs.add_vertex!(manager.graph)
+        next_scc += 1
+    end
+
+    manager.nreps = next_scc - 1
+
+    return manager
+end
+
+"""
+    finalize_phase!(manager::PropagationManager) -> PropagationManager
+
+Prepare `manager` for the next parity presolve phase while preserving all
+unlabeled SCC structure.
+
+Every labeled SCC is stripped of incident graph edges, all literals in the
+labeled component become singleton SCCs, and all affected SCC labels are reset
+to `UNDEF`.
+"""
+function finalize_phase!(manager::PropagationManager)
+    @assert isempty(manager.pending_fixings)
+    @assert isempty(manager.pending_substitutions)
+
+    labeled_sccs = [scc for scc in eachindex(manager.lit_labels) if manager.lit_labels[scc] != UNDEF]
+    isempty(labeled_sccs) || begin
+        labeled_scc_set = Set(labeled_sccs)
+        old_graph = manager.graph
+        new_graph = DiGraph(nv(old_graph))
+
+        for edge in edges(old_graph)
+            src(edge) in labeled_scc_set && continue
+            dst(edge) in labeled_scc_set && continue
+            Graphs.add_edge!(new_graph, src(edge), dst(edge))
+        end
+        manager.graph = new_graph
+
+        next_scc = manager.nreps + 1
+        for scc in labeled_sccs
+            rep_pos = manager.scc_pos_to_rep_pos[scc]
+            positions = _rep_component_positions(manager, rep_pos)
+
+            for pos in positions
+                manager.parent_pos[pos] = pos
+            end
+
+            manager.rep_pos_to_scc_pos[rep_pos] = scc
+            manager.scc_pos_to_rep_pos[scc] = rep_pos
+            manager.lit_labels[scc] = UNDEF
+
+            for pos in positions
+                pos == rep_pos && continue
+                manager.rep_pos_to_scc_pos[pos] = next_scc
+                push!(manager.scc_pos_to_rep_pos, pos)
+                push!(manager.lit_labels, UNDEF)
+                Graphs.add_vertex!(manager.graph)
+                next_scc += 1
+            end
+        end
+
+        manager.nreps = next_scc - 1
+    end
+
+    empty!(manager.seen_fixings)
+    empty!(manager.seen_substitutions)
+    return manager
 end
 
 """

@@ -89,6 +89,7 @@ end
 
 function _qp_show(io::IO, model::QPModel)
     println(io, "QPModel")
+    println(io, "Infeasible: ", model.infeasible)
 
     var_ids = collect(keys(model.vars))
     sort!(var_ids)
@@ -216,5 +217,4 @@ end
 function Base.show(io::IO, ::MIME"text/plain", model::ParityModel)
     return _parity_show(io, model)
 end
-
 
