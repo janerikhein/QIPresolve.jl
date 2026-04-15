@@ -101,8 +101,7 @@ This mutates `model` and normalizes constraints after the update.
 function var_bound_shift!(model::QPModel, var_id::VarId, shift::Float64)
     # apply shift to constraints
     for con in model.cons
-        affine_transform!(con.qe, var_id, 1.0, shift)
-        normalize!(con)
+        affine_transform!(con, var_id, 1.0, shift)
     end
     # apply shift to objective
     affine_transform!(model.obj_expr, var_id, 1.0, shift)
@@ -137,7 +136,13 @@ where `offset` is `0` for even and `1` for odd.
 
 Returns the number of variables transformed.
 """
-function fix_parities!(model::QPModel, propagator::PropagationManager)
+fix_parities!(model::QPModel, propagator::PropagationManager) = fix_parities!(model, propagator, nothing)
+
+function fix_parities!(
+    model::QPModel,
+    propagator::PropagationManager,
+    postsolver::Union{Nothing, ParityPostsolver},
+)
     nfixed = 0
 
     for lit in propagator.pos_to_lit
@@ -154,6 +159,7 @@ function fix_parities!(model::QPModel, propagator::PropagationManager)
         new_lb == 0.0 && (new_lb = 0.0)
         new_ub == 0.0 && (new_ub = 0.0)
 
+        postsolver !== nothing && append_fixed_bit!(postsolver, lit.vid, val)
         affine_transform!(model, lit.vid, 2.0, offset)
         set_var_bounds!(model, lit.vid, new_lb, new_ub)
         nfixed += 1
@@ -182,11 +188,21 @@ function lin_transform!(
         lin_transform!(con, var_id, other_id, a, b; c = c)
     end
 
+    if b != 0.0 && var_id != other_id && has_var(model.obj_expr, var_id) && !has_var(model.obj_expr, other_id)
+        add_var!(model.obj_expr, other_id; clear_buf = true)
+    end
+
     # apply transformation to objective expression
     return lin_transform!(model.obj_expr, var_id, other_id, a, b; c = c)
 end
 
-function fix_parity_patterns!(model::QPModel, propagator::ParityPropagator)
+fix_parity_patterns!(model::QPModel, propagator::ParityPropagator) = fix_parity_patterns!(model, propagator, nothing)
+
+function fix_parity_patterns!(
+    model::QPModel,
+    propagator::ParityPropagator,
+    postsolver::Union{Nothing, ParityPostsolver},
+)
     candidate_vids = VarId[]
 
     for scc_pos in eachindex(propagator.scc_pos_to_rep_pos)
@@ -230,6 +246,7 @@ function fix_parity_patterns!(model::QPModel, propagator::ParityPropagator)
         @assert length(unique(lit.vid for lit in component_lits)) == length(component_lits)
 
         b_scc = add_var!(model, IntVar(0.0, 1.0))
+        postsolver !== nothing && ensure_tracked_var!(postsolver, b_scc)
 
         for lit in component_lits
             var = model.vars[lit.vid]
@@ -241,10 +258,12 @@ function fix_parity_patterns!(model::QPModel, propagator::ParityPropagator)
             if lit.neg
                 l0, u0 = o_lo, o_hi
                 l1, u1 = e_lo, e_hi
+                postsolver !== nothing && append_binary_bit!(postsolver, lit.vid, b_scc; negated = true)
                 lin_transform!(model, lit.vid, b_scc, 2.0, -1.0; c = 1.0)
             else
                 l0, u0 = e_lo, e_hi
                 l1, u1 = o_lo, o_hi
+                postsolver !== nothing && append_binary_bit!(postsolver, lit.vid, b_scc)
                 lin_transform!(model, lit.vid, b_scc, 2.0, 1.0)
             end
 
@@ -277,7 +296,9 @@ function fix_parity_patterns!(model::QPModel, propagator::ParityPropagator)
 end
 
 
-function fix_vars!(model::QPModel)
+fix_vars!(model::QPModel) = fix_vars!(model, nothing)
+
+function fix_vars!(model::QPModel, postsolver::Union{Nothing, ParityPostsolver})
     model.infeasible && return model
 
     for (var_id, var) in model.vars
@@ -286,10 +307,11 @@ function fix_vars!(model::QPModel)
             return model
         end
         var.lb != var.ub && continue
-        affine_transform!(model, var_id, 1.0, var.lb)
+        postsolver !== nothing && register_fixed_var!(postsolver, var_id, var.lb)
+        var_bound_shift!(model, var_id, var.lb)
         @assert model.vars[var_id].lb == model.vars[var_id].ub == 0.0
         for con in model.cons
-            remove_var!(con.qe, var_id)
+            remove_var!(con, var_id)
         end
         delete!(model.vars, var_id)
     end

@@ -19,32 +19,6 @@ function ParityModel(
     return ParityModel(var_to_pos, pos_to_var, cons, pivots, false)
 end
 
-function reformulate_bipartite_cons!(model::ParityModel)
-    i = 1
-    while i <= length(model.cons)
-        con = ensure_updated!(model.cons[i])
-        split = split_bipartite(con)
-
-        if split === nothing
-            i += 1
-            continue
-        end
-
-        con1, con2 = split
-        deleteat!(model.cons, i)
-        insert!(model.cons, i, con2)
-        insert!(model.cons, i, con1)
-
-        deleteat!(model.pivots, i)
-        insert!(model.pivots, i, nothing)
-        insert!(model.pivots, i, nothing)
-
-        i += 2
-    end
-
-    return model
-end
-
 function cleanup!(model::ParityModel)
     for i in length(model.cons):-1:1
         con = ensure_updated!(model.cons[i])
@@ -259,6 +233,63 @@ function _has_constraints_requiring_propagation(model::ParityModel)
     return any(con.meta.requires_prop for con in model.cons)
 end
 
+_assignment_lit(vid::VarId, val::Bool) = VarLit(vid, !val)
+
+function _add_tripartite_implications!(
+    manager::PropagationManager,
+    idx_to_vid::Vector{VarId},
+    action::_TripartiteImplicationAction,
+)
+    x_vid = idx_to_vid[action.x_idx]
+    y_vid = idx_to_vid[action.y_idx]
+
+    add_implication!(
+        manager,
+        _assignment_lit(x_vid, !action.r1),
+        _assignment_lit(y_vid, action.r2),
+    )
+    add_implication!(
+        manager,
+        _assignment_lit(y_vid, !action.r2),
+        _assignment_lit(x_vid, action.r1),
+    )
+
+    return manager
+end
+
+function _insert_tripartite_rewrite!(
+    model::ParityModel,
+    manager::PropagationManager,
+    row_idx::Int,
+    action::_TripartiteRewriteAction,
+)
+    deleteat!(model.cons, row_idx)
+    deleteat!(model.pivots, row_idx)
+
+    new_cons = XorConstraint[]
+    for (support, rhs) in (
+        (action.support1, action.rhs1),
+        (action.support2, action.rhs2),
+    )
+        nnz = count(support)
+        @assert nnz > 0
+
+        if nnz == 1
+            vid = model.pos_to_var_id[findfirst(support)]
+            fix_var!(manager, vid, rhs)
+        else
+            push!(new_cons, XorConstraint(copy(support), rhs))
+        end
+    end
+
+    for (offset, con) in enumerate(new_cons)
+        insert!(model.cons, row_idx + offset - 1, con)
+        insert!(model.pivots, row_idx + offset - 1, nothing)
+    end
+
+    return model
+end
+
 """
 Applies fixing vid -> val to all constraints
 """
@@ -280,8 +311,33 @@ function propagate!(model::ParityModel, manager::PropagationManager)
         empty!(manager.seen_fixings)
         empty!(manager.seen_substitutions)
 
-        for con in model.cons
+        i = 1
+        while i <= length(model.cons)
+            con = ensure_updated!(model.cons[i])
+            if !con.meta.requires_prop
+                i += 1
+                continue
+            end
+
+            if con.meta.is_pure_xor || (con.meta.nnz_par == 0 && con.meta.nnz_conj == 1)
+                register_implications!(manager, con, model.pos_to_var_id)
+                i += 1
+                continue
+            end
+
+            tripartite_action = _tripartite_action(con)
+            if tripartite_action isa _TripartiteImplicationAction
+                _add_tripartite_implications!(manager, model.pos_to_var_id, tripartite_action)
+                con.meta.requires_prop = false
+                i += 1
+                continue
+            elseif tripartite_action isa _TripartiteRewriteAction
+                _insert_tripartite_rewrite!(model, manager, i, tripartite_action)
+                continue
+            end
+
             register_implications!(manager, con, model.pos_to_var_id)
+            i += 1
         end
 
         update!(manager)

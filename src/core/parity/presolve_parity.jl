@@ -109,11 +109,16 @@ function build_parity_model(model::QPModel)
     return ParityModel(var_id_to_pos, pos_to_var_id, cons)
 end
 
-# TODO: add postsolve stack structure here
-function parity_presolve_phase!(model::QPModel, propagator::PropagationManager)
+parity_presolve_phase!(model::QPModel, propagator::PropagationManager) = parity_presolve_phase!(model, propagator, nothing)
+
+function parity_presolve_phase!(
+    model::QPModel,
+    propagator::PropagationManager,
+    postsolver::Union{Nothing, ParityPostsolver},
+)
     model.infeasible && return (changed = false, fixed_parities = 0, pattern_rewritten_vars = 0)
 
-    fix_vars!(model)
+    fix_vars!(model, postsolver)
     model.infeasible && return (changed = false, fixed_parities = 0, pattern_rewritten_vars = 0)
 
     if isempty(model.vars)
@@ -128,7 +133,6 @@ function parity_presolve_phase!(model::QPModel, propagator::PropagationManager)
     end
 
     ensure_literals!(propagator, parity_model.pos_to_var_id)
-    reformulate_bipartite_cons!(parity_model)
     propagate!(parity_model, propagator)
     if parity_model.infeasible
         model.infeasible = true
@@ -155,12 +159,12 @@ function parity_presolve_phase!(model::QPModel, propagator::PropagationManager)
         end
     end
 
-    parities_fixed = fix_parities!(model, propagator)
-    pattern_rewritten_vars = fix_parity_patterns!(model, propagator)
+    parities_fixed = fix_parities!(model, propagator, postsolver)
+    pattern_rewritten_vars = fix_parity_patterns!(model, propagator, postsolver)
     changed = parities_fixed > 0 || pattern_rewritten_vars > 0
 
     if changed
-        fix_vars!(model)
+        fix_vars!(model, postsolver)
         model.infeasible && return (changed = false, fixed_parities = parities_fixed, pattern_rewritten_vars = pattern_rewritten_vars)
     end
 
@@ -168,13 +172,15 @@ function parity_presolve_phase!(model::QPModel, propagator::PropagationManager)
     return (changed = changed, fixed_parities = parities_fixed, pattern_rewritten_vars = pattern_rewritten_vars)
 end
 
-function parity_presolve!(model::QPModel)
+parity_presolve!(model::QPModel) = parity_presolve!(model, nothing)
+
+function parity_presolve!(model::QPModel, postsolver::Union{Nothing, ParityPostsolver})
     model.infeasible && return model
 
     propagator = PropagationManager(VarId[])
     scale_constraints_gcd!(model)
     while true
-        stats = parity_presolve_phase!(model, propagator)
+        stats = parity_presolve_phase!(model, propagator, postsolver)
         model.infeasible && break
 
         scale_constraints_gcd!(model)

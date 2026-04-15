@@ -7,23 +7,14 @@ Represent a bound constraint
 
 where `qe` is a `QuadExpr` and `lhs`/`rhs` are scalar bounds.
 """
-mutable struct Constraint
-    id::Int
-    qe::QuadExpr
-    lhs::Float64
-    rhs::Float64
-end
-
-is_equality(con::Constraint) = (con.lhs == con.rhs)
-
 @inline _is_integral_value(x::Float64) = isfinite(x) && x == round(x)
 @inline _is_integral_or_infinite(x::Float64) = !isfinite(x) || _is_integral_value(x)
 @inline _accumulate_gcd(g::Int, x::Float64) = gcd(g, abs(round(Int, x)))
 
-function is_integer(con::Constraint)
-    quad_mat = quad(con.qe)
-    lin_vec = lin(con.qe)
-    nvars = con.qe.nvars
+function _compute_is_integer(qe::QuadExpr, lhs::Float64, rhs::Float64)
+    quad_mat = quad(qe)
+    lin_vec = lin(qe)
+    nvars = qe.nvars
 
     for i in 1:nvars
         _is_integral_value(lin_vec[i]) || return false
@@ -38,9 +29,48 @@ function is_integer(con::Constraint)
         end
     end
 
-    lhs = con.lhs - con.qe.constant
-    rhs = con.rhs - con.qe.constant
-    return _is_integral_or_infinite(lhs) && _is_integral_or_infinite(rhs)
+    normalized_lhs = lhs - qe.constant
+    normalized_rhs = rhs - qe.constant
+    return _is_integral_or_infinite(normalized_lhs) && _is_integral_or_infinite(normalized_rhs)
+end
+
+mutable struct Constraint
+    id::Int
+    qe::QuadExpr
+    lhs::Float64
+    rhs::Float64
+    is_integer::Bool
+
+    function Constraint(id::Int, qe::QuadExpr, lhs::Float64, rhs::Float64)
+        return new(id, qe, lhs, rhs, _compute_is_integer(qe, lhs, rhs))
+    end
+end
+
+is_equality(con::Constraint) = (con.lhs == con.rhs)
+
+@inline is_integer(con::Constraint) = con.is_integer
+
+@inline function _refresh_is_integer!(con::Constraint)
+    con.is_integer = _compute_is_integer(con.qe, con.lhs, con.rhs)
+    return con
+end
+
+@inline function _require_integral_transform_value(name::AbstractString, value::Float64)
+    _is_integral_value(value) && return
+    throw(ArgumentError("Integral constraints require integer-valued $name, got $value"))
+end
+
+@inline function _require_integer_preserving_affine(scale::Float64, offset::Float64)
+    _require_integral_transform_value("scale", scale)
+    _require_integral_transform_value("offset", offset)
+    return
+end
+
+@inline function _require_integer_preserving_lin(a::Float64, b::Float64, c::Float64)
+    _require_integral_transform_value("a", a)
+    _require_integral_transform_value("b", b)
+    _require_integral_transform_value("c", c)
+    return
 end
 
 """
@@ -98,6 +128,13 @@ end
 
 vars(con::Constraint) = vars(con.qe)
 
+function remove_var!(con::Constraint, id::VarId; clear_buf::Bool = true)
+    removed = remove_var!(con.qe, id; clear_buf = clear_buf)
+    removed || return false
+    con.is_integer || _refresh_is_integer!(con)
+    return true
+end
+
 """
     normalize!(con::Constraint) -> Constraint
 
@@ -130,6 +167,8 @@ becomes
     2lhs <= x'(Q+Q')x + 2c'x + 2constant <= 2rhs
 """
 function symmetrize!(con::Constraint)
+    was_integer = con.is_integer
+
     # get views of quadratic terms and linear terms
     quad_mat = quad(con.qe)
     lin_vec = lin(con.qe)
@@ -140,6 +179,7 @@ function symmetrize!(con::Constraint)
     con.qe.constant *= 2
     con.lhs *= 2
     con.rhs *= 2
+    was_integer || _refresh_is_integer!(con)
     return con
 end
 
@@ -150,8 +190,15 @@ Apply the affine substitution `x_var_id := scale * x_var_id + offset`
 to the constraint expression and normalize bounds.
 """
 @inline function affine_transform!(con::Constraint, var_id::VarId, scale::Float64, offset::Float64)
+    has_var(con.qe, var_id) || return con
+
+    was_integer = con.is_integer
+    was_integer && _require_integer_preserving_affine(scale, offset)
+
     affine_transform!(con.qe, var_id, scale, offset)
-    return normalize!(con)
+    normalize!(con)
+    was_integer || _refresh_is_integer!(con)
+    return con
 end
 
 """
@@ -168,6 +215,17 @@ to the constraint expression and normalize bounds.
     b::Float64;
     c::Float64 = 0.0,
 )
+    has_var(con.qe, var_id) || return con
+    var_id == other_id && return con
+
+    was_integer = con.is_integer
+    was_integer && _require_integer_preserving_lin(a, b, c)
+
+    if b != 0.0 && var_id != other_id && has_var(con.qe, var_id) && !has_var(con.qe, other_id)
+        add_var!(con.qe, other_id; clear_buf = true)
+    end
     lin_transform!(con.qe, var_id, other_id, a, b; c = c)
-    return normalize!(con)
+    normalize!(con)
+    was_integer || _refresh_is_integer!(con)
+    return con
 end

@@ -163,6 +163,72 @@ end
     @test PC.is_integer(infinite_bound)
 end
 
+@testset "Constraint cached integrality maintenance" begin
+    normalized = PC.Constraint(
+        next_con_id(),
+        PC.QuadExpr(QuadTerm[(2.0, 1, 1), (4.0, 1, 2)], LinTerm[(2.0, 1)]; constant = 1.0),
+        1.0,
+        5.0,
+    )
+    @test PC.is_integer(normalized)
+    PC.normalize!(normalized)
+    @test PC.is_integer(normalized)
+
+    symmetrized = PC.Constraint(
+        next_con_id(),
+        PC.QuadExpr(QuadTerm[(2.0, 1, 1), (4.0, 1, 2)], LinTerm[(2.0, 1), (-2.0, 2)]),
+        -3.0,
+        5.0,
+    )
+    @test PC.is_integer(symmetrized)
+    PC.symmetrize!(symmetrized)
+    @test PC.is_integer(symmetrized)
+
+    scaled = PC.Constraint(
+        next_con_id(),
+        PC.QuadExpr(QuadTerm[(6.0, 1, 1), (8.0, 1, 2)], LinTerm[(4.0, 1), (-2.0, 2)]),
+        -4.0,
+        10.0,
+    )
+    @test PC.is_integer(scaled)
+    @test PC.scale_gcd!(scaled)
+    @test PC.is_integer(scaled)
+end
+
+@testset "Constraint integral transforms enforce integer preservation" begin
+    affine_con = PC.Constraint(
+        next_con_id(),
+        PC.QuadExpr(QuadTerm[(2.0, 1, 1), (4.0, 1, 2)], LinTerm[(2.0, 1)]),
+        0.0,
+        6.0,
+    )
+    @test PC.is_integer(affine_con)
+    @test_throws ArgumentError PC.affine_transform!(affine_con, 1, 1.0, 0.5)
+    @test PC.is_integer(affine_con)
+
+    lin_con = PC.Constraint(
+        next_con_id(),
+        PC.QuadExpr(QuadTerm[(2.0, 1, 1), (4.0, 1, 2)], LinTerm[(2.0, 1), (2.0, 2)]),
+        -2.0,
+        8.0,
+    )
+    @test PC.is_integer(lin_con)
+    @test_throws ArgumentError PC.lin_transform!(lin_con, 1, 2, 1.0, 0.5)
+    @test PC.is_integer(lin_con)
+end
+
+@testset "Constraint integer-valued transforms refresh cached integrality" begin
+    affine_con = PC.Constraint(
+        next_con_id(),
+        PC.QuadExpr(QuadTerm[(1.0, 1, 2)], LinTerm[]),
+        0.0,
+        2.0,
+    )
+    @test !PC.is_integer(affine_con)
+    PC.affine_transform!(affine_con, 1, 2.0, 0.0)
+    @test PC.is_integer(affine_con)
+end
+
 @testset "Constraint scale_gcd!" begin
     con = PC.Constraint(
         next_con_id(),

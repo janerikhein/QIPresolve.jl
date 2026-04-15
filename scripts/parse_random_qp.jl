@@ -10,8 +10,8 @@ PC = QIP.PresolvingCore
 const QuadTerm = Tuple{Float64, Int, Int}
 const LinTerm = Tuple{Float64, Int}
 
-const N_VARS = 100
-const N_CONS = 1000
+const N_VARS = 30
+const N_CONS = 500
 const VAR_LB = 0
 const VAR_UB = 100
 const SEED = 17
@@ -135,12 +135,45 @@ function collect_fixed_parity_matches(
     return matches
 end
 
-log_domain_sum(model::PC.QPModel) = sum(log(var.ub - var.lb) for var in values(model.vars))
+log_domain_sum(model::PC.QPModel) = sum(log(var.ub - var.lb) for var in values(model.vars); init = 0.0)
+
+function build_reduced_solution(model::PC.QPModel)
+    solution = Dict{Int, Float64}()
+
+    for (var_id, var) in model.vars
+        @assert var.lb == var.ub
+        solution[var_id] = var.lb
+    end
+
+    return solution
+end
+
+function dense_solution(solution::Dict{Int, Float64}, nvars::Int)
+    return [round(Int, solution[var_id]) for var_id in 1:nvars]
+end
+
+function satisfies_model(model::PC.QPModel, x::Vector{Int})
+    return all(con -> PC.eval_full(con.qe, x) == con.rhs, model.cons)
+end
+
+function mismatches(x_ref::Vector{Int}, x_candidate::Vector{Int}; limit::Int = 10)
+    diffs = NamedTuple{(:vid, :x_star, :reconstructed), Tuple{Int, Int, Int}}[]
+
+    for vid in eachindex(x_ref)
+        x_ref[vid] == x_candidate[vid] && continue
+        push!(diffs, (vid = vid, x_star = x_ref[vid], reconstructed = x_candidate[vid]))
+        length(diffs) >= limit && break
+    end
+
+    return diffs
+end
 
 
 rng = MersenneTwister(SEED)
 qp_model, x_star = build_random_qp_model(rng)
 validate_model(qp_model, x_star)
+original_model = deepcopy(qp_model)
+postsolver = PC.ParityPostsolver(keys(qp_model.vars))
 
 println("x_star = $(collect(x_star))")
 println("nvars=$(length(qp_model.vars)) ncons=$(length(qp_model.cons)) seed=$SEED")
@@ -153,7 +186,7 @@ phase_idx = 0
 while !qp_model.infeasible
     
     global phase_idx += 1
-    stats = PC.parity_presolve_phase!(qp_model, propagator)
+    stats = PC.parity_presolve_phase!(qp_model, propagator, postsolver)
     PC.scale_constraints_gcd!(qp_model)
     #println(qp_model)
     println(
@@ -172,4 +205,22 @@ end
 println("log_domain_sum_after = $(log_domain_sum(qp_model))")
 println("final model infeasible = $(qp_model.infeasible)")
 
+if qp_model.infeasible
+    println("postsolve skipped: reduced model is infeasible")
+else
+    reduced_solution = build_reduced_solution(qp_model)
+    reconstructed_solution = PC.postsolve(postsolver, reduced_solution)
+    x_reconstructed = dense_solution(reconstructed_solution, length(x_star))
+
+    matches_x_star = x_reconstructed == collect(x_star)
+    reconstructed_satisfies_original = satisfies_model(original_model, x_reconstructed)
+    mismatch_rows = mismatches(collect(x_star), x_reconstructed)
+
+    println("reduced_solution = $reduced_solution")
+    println("x_reconstructed = $x_reconstructed")
+    println("matches_x_star = $matches_x_star")
+    println("reconstructed_satisfies_original = $reconstructed_satisfies_original")
+    println("nmismatched = $(count(!iszero, x_reconstructed .- collect(x_star)))")
+    println("mismatch_examples = $mismatch_rows")
+end
 

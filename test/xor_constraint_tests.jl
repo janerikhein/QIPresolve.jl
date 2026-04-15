@@ -170,31 +170,6 @@ end
     @test con3.meta.requires_prop
 end
 
-@testset "split_bipartite returns two XOR constraints for full bipartite conjs" begin
-    par = falses(4)
-    conj = symmetric_bitmatrix(4, [(1, 3), (1, 4), (2, 3), (2, 4)])
-    con = PC.XorConstraint(par, conj, true)
-
-    split = PC.split_bipartite(con)
-    @test split !== nothing
-    con1, con2 = split
-    @test con1.meta.is_pure_xor
-    @test con2.meta.is_pure_xor
-    @test con1.rhs
-    @test con2.rhs
-
-    expected = Set([BitVector([1, 1, 0, 0]), BitVector([0, 0, 1, 1])])
-    got = Set([con1.par, con2.par])
-    @test got == expected
-
-    not_split_rhs = PC.XorConstraint(par, conj, false)
-    @test PC.split_bipartite(not_split_rhs) === nothing
-
-    triangle = symmetric_bitmatrix(3, [(1, 2), (2, 3), (1, 3)])
-    non_bip = PC.XorConstraint(falses(3), triangle, true)
-    @test PC.split_bipartite(non_bip) === nothing
-end
-
 @testset "fix_var! preserves semantics and invariants" begin
     original_xor = PC.XorConstraint(BitVector([1, 0, 1, 0]), true)
     con_xor = deepcopy(original_xor)

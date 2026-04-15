@@ -1,4 +1,5 @@
 using Test
+using Graphs: has_edge
 import QIPresolve.PresolvingCore as PC
 
 function parity_identity_maps(n::Int)
@@ -14,6 +15,11 @@ function parity_symmetric_bitmatrix(n::Int, edges::Vector{Tuple{Int, Int}})
         mat[j, i] = true
     end
     return mat
+end
+
+function parity_scc_pos(manager::PC.PropagationManager, lit::PC.VarLit)
+    rep = PC.repr!(manager, manager.lit_to_pos[lit])
+    return manager.rep_pos_to_scc_pos[rep]
 end
 
 @testset "gauss_jordan_xor! only pivots and eliminates pure XOR rows" begin
@@ -189,28 +195,29 @@ end
     @test model.pivots[3] === nothing
 end
 
-@testset "reformulate_bipartite_cons! splits bipartite rows and resets their pivots" begin
-    pos_to_var, var_to_pos = parity_identity_maps(5)
+@testset "propagate! rewrites full bipartite rows into two XOR constraints" begin
+    pos_to_var, var_to_pos = parity_identity_maps(7)
     bipartite = PC.XorConstraint(
-        falses(5),
-        parity_symmetric_bitmatrix(5, [(1, 3), (1, 4), (2, 3), (2, 4)]),
+        falses(7),
+        parity_symmetric_bitmatrix(7, [(1, 4), (1, 5), (1, 6), (2, 4), (2, 5), (2, 6), (3, 4), (3, 5), (3, 6)]),
         true,
     )
     unsplittable = PC.XorConstraint(
-        BitVector([1, 0, 0, 0, 1]),
+        BitVector([1, 0, 0, 0, 0, 1, 1]),
         false,
     )
     untouched = PC.XorConstraint(
-        BitVector([0, 1, 0, 1, 0]),
+        BitVector([0, 1, 0, 1, 0, 0, 1]),
         false,
     )
 
     model = PC.ParityModel(var_to_pos, pos_to_var, [unsplittable, bipartite, untouched])
     model.pivots[1] = (1, nothing)
-    model.pivots[2] = (3, 1)
+    model.pivots[2] = (4, 1)
     model.pivots[3] = (4, nothing)
+    manager = PC.PropagationManager(model.pos_to_var_id)
 
-    out = PC.reformulate_bipartite_cons!(model)
+    out = PC.propagate!(model, manager)
 
     @test out === model
     @test length(model.cons) == 4
@@ -224,34 +231,127 @@ end
     @test model.cons[2].rhs
     @test model.cons[3].rhs
 
-    expected_split = Set([BitVector([1, 1, 0, 0, 0]), BitVector([0, 0, 1, 1, 0])])
+    expected_split = Set([BitVector([1, 1, 1, 0, 0, 0, 0]), BitVector([0, 0, 0, 1, 1, 1, 0])])
     @test Set([model.cons[2].par, model.cons[3].par]) == expected_split
 
     @test model.cons[4].par == untouched.par
     @test model.cons[4].rhs == untouched.rhs
+    @test all(!con.meta.requires_prop for con in model.cons)
 end
 
-@testset "reformulate_bipartite_cons! leaves non-splittable rows unchanged" begin
+@testset "propagate! rewrites tripartite rows with nonempty Z into XOR constraints" begin
     pos_to_var, var_to_pos = parity_identity_maps(4)
-    xor_con = PC.XorConstraint(BitVector([1, 0, 1, 0]), true)
-    non_bip = PC.XorConstraint(
-        falses(4),
-        parity_symmetric_bitmatrix(4, [(1, 2), (2, 3), (1, 3)]),
+    tripartite = PC.XorConstraint(
+        BitVector([1, 0, 0, 0]),
+        parity_symmetric_bitmatrix(4, [(1, 2), (1, 3), (1, 4), (2, 3), (2, 4)]),
         true,
     )
+    model = PC.ParityModel(var_to_pos, pos_to_var, [tripartite])
+    manager = PC.PropagationManager(model.pos_to_var_id)
 
-    model = PC.ParityModel(var_to_pos, pos_to_var, [deepcopy(xor_con), deepcopy(non_bip)])
-    model.pivots[1] = (1, nothing)
-    model.pivots[2] = (2, 1)
-
-    PC.reformulate_bipartite_cons!(model)
+    PC.propagate!(model, manager)
 
     @test length(model.cons) == 2
-    @test model.pivots == PC.PivotSlot[(1, nothing), (2, 1)]
-    @test model.cons[1].par == xor_con.par
-    @test model.cons[1].rhs == xor_con.rhs
-    @test model.cons[2].conj == non_bip.conj
-    @test model.cons[2].rhs == non_bip.rhs
+    @test model.pivots == PC.PivotSlot[nothing, nothing]
+    @test model.cons[1].meta.is_pure_xor
+    @test model.cons[1].par == BitVector([1, 0, 1, 1])
+    @test model.cons[1].rhs
+    @test model.cons[2].meta.is_pure_xor
+    @test model.cons[2].par == BitVector([0, 1, 1, 1])
+    @test !model.cons[2].rhs
+    @test all(!con.meta.requires_prop for con in model.cons)
+end
+
+@testset "propagate! adds implication-only tripartite matches without removing the row" begin
+    pos_to_var, var_to_pos = parity_identity_maps(2)
+    implication_row = PC.XorConstraint(
+        BitVector([0, 1]),
+        parity_symmetric_bitmatrix(2, [(1, 2)]),
+        false,
+    )
+    model = PC.ParityModel(var_to_pos, pos_to_var, [implication_row])
+    manager = PC.PropagationManager(model.pos_to_var_id)
+
+    PC.propagate!(model, manager)
+
+    @test length(model.cons) == 1
+    @test model.cons[1].par == implication_row.par
+    @test model.cons[1].conj == implication_row.conj
+    @test model.cons[1].rhs == implication_row.rhs
+    @test !model.cons[1].meta.requires_prop
+    @test !model.infeasible
+
+    x_false = parity_scc_pos(manager, PC.VarLit(1, true))
+    y_false = parity_scc_pos(manager, PC.VarLit(2, true))
+    y_true = parity_scc_pos(manager, PC.VarLit(2, false))
+    x_true = parity_scc_pos(manager, PC.VarLit(1, false))
+
+    @test has_edge(manager.graph, x_false, y_false)
+    @test has_edge(manager.graph, y_true, x_true)
+    @test PC.fixed_value(manager, 1) === nothing
+    @test PC.fixed_value(manager, 2) === nothing
+end
+
+@testset "propagate! rewrites one tripartite side into a fixing and the other into an XOR row" begin
+    pos_to_var, var_to_pos = parity_identity_maps(4)
+    mixed_row = PC.XorConstraint(
+        BitVector([0, 1, 1, 1]),
+        parity_symmetric_bitmatrix(4, [(1, 2), (1, 3), (1, 4)]),
+        true,
+    )
+    model = PC.ParityModel(var_to_pos, pos_to_var, [mixed_row])
+    manager = PC.PropagationManager(model.pos_to_var_id)
+
+    PC.propagate!(model, manager)
+
+    @test length(model.cons) == 1
+    @test model.pivots == PC.PivotSlot[nothing]
+    @test model.cons[1].meta.is_pure_xor
+    @test model.cons[1].par == BitVector([0, 1, 1, 1])
+    @test model.cons[1].rhs
+    @test PC.fixed_value(manager, 1) == false
+    @test !model.infeasible
+end
+
+@testset "propagate! rewrites both tripartite sides into direct fixings" begin
+    pos_to_var, var_to_pos = parity_identity_maps(2)
+    fixing_row = PC.XorConstraint(
+        BitVector([1, 1]),
+        parity_symmetric_bitmatrix(2, [(1, 2)]),
+        false,
+    )
+    model = PC.ParityModel(var_to_pos, pos_to_var, [fixing_row])
+    manager = PC.PropagationManager(model.pos_to_var_id)
+
+    PC.propagate!(model, manager)
+
+    @test isempty(model.cons)
+    @test isempty(model.pivots)
+    @test PC.fixed_value(manager, 1) == false
+    @test PC.fixed_value(manager, 2) == false
+    @test !model.infeasible
+end
+
+@testset "propagate! leaves bad tripartite linear supports unchanged" begin
+    pos_to_var, var_to_pos = parity_identity_maps(3)
+    unchanged = PC.XorConstraint(
+        BitVector([1, 1, 0]),
+        parity_symmetric_bitmatrix(3, [(1, 2), (1, 3), (2, 3)]),
+        true,
+    )
+    model = PC.ParityModel(var_to_pos, pos_to_var, [deepcopy(unchanged)])
+    model.pivots[1] = (1, 2)
+    manager = PC.PropagationManager(model.pos_to_var_id)
+
+    PC.propagate!(model, manager)
+
+    @test length(model.cons) == 1
+    @test model.pivots == PC.PivotSlot[(1, 2)]
+    @test model.cons[1].par == unchanged.par
+    @test model.cons[1].conj == unchanged.conj
+    @test model.cons[1].rhs == unchanged.rhs
+    @test !model.cons[1].meta.requires_prop
+    @test !model.infeasible
 end
 
 @testset "cleanup! removes empty rows, tracks infeasibility, and keeps pivots aligned" begin

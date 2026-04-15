@@ -183,6 +183,24 @@ end
     end
 end
 
+@testset "QPModel var_bound_shift! preserves cached integrality" begin
+    vars = Dict{PC.VarId, PC.IntVar}(
+        1 => PC.IntVar(0.0, 3.0),
+        2 => PC.IntVar(-1.0, 4.0),
+    )
+    con = PC.Constraint(
+        next_con_id(),
+        PC.QuadExpr(QuadTerm[(2.0, 1, 1), (4.0, 1, 2)], LinTerm[(2.0, 1), (-2.0, 2)]),
+        -2.0,
+        8.0,
+    )
+    model = PC.QPModel(vars, [con], PC.QuadExpr(QuadTerm[], LinTerm[]), :min)
+
+    @test PC.is_integer(model.cons[1])
+    PC.var_bound_shift!(model, 1, 1.0)
+    @test PC.is_integer(model.cons[1])
+end
+
 @testset "QPModel scale_constraints_gcd!" begin
     vars = Dict{PC.VarId, PC.IntVar}(
         1 => PC.IntVar(0.0, 3.0),
@@ -252,6 +270,27 @@ end
     @test PC.get_lin_coeff(model.cons[1].qe, 1) == 2.0
 end
 
+@testset "QPModel transforms can refresh cached integrality before gcd scaling" begin
+    vars = Dict{PC.VarId, PC.IntVar}(
+        1 => PC.IntVar(0.0, 3.0),
+        2 => PC.IntVar(0.0, 3.0),
+    )
+    con = PC.Constraint(
+        next_con_id(),
+        PC.QuadExpr(QuadTerm[(1.0, 1, 2)], LinTerm[]),
+        0.0,
+        8.0,
+    )
+    model = PC.QPModel(vars, [con], PC.QuadExpr(QuadTerm[], LinTerm[]), :min)
+
+    @test !PC.is_integer(model.cons[1])
+    PC.affine_transform!(model, 1, 4.0, 0.0)
+    @test PC.is_integer(model.cons[1])
+    @test PC.scale_constraints_gcd!(model) == 1
+    @test PC.get_quad_coeff(model.cons[1].qe, 1, 2) == 2.0
+    @test model.cons[1].rhs == 4.0
+end
+
 @testset "QPModel fix_vars! handles singleton linear constraints with negative coefficients" begin
     vars = Dict{PC.VarId, PC.IntVar}(1 => PC.IntVar(0.0, 1.0))
     ranged = PC.Constraint(
@@ -293,4 +332,29 @@ end
     PC.fix_vars!(infeasible_model)
 
     @test infeasible_model.infeasible
+end
+
+@testset "QPModel fix_vars! preserves cached integrality after variable removal" begin
+    vars = Dict{PC.VarId, PC.IntVar}(
+        1 => PC.IntVar(0.0, 0.0),
+        2 => PC.IntVar(0.0, 5.0),
+        3 => PC.IntVar(0.0, 5.0),
+    )
+    con = PC.Constraint(
+        next_con_id(),
+        PC.QuadExpr(
+            QuadTerm[(1.0, 1, 2), (2.0, 2, 3)],
+            LinTerm[(2.0, 2), (1.0, 3)],
+        ),
+        0.0,
+        6.0,
+    )
+    model = PC.QPModel(vars, [con], PC.QuadExpr(QuadTerm[], LinTerm[]), :min)
+
+    @test !PC.is_integer(model.cons[1])
+    PC.fix_vars!(model)
+    @test !model.infeasible
+    @test !haskey(model.vars, 1)
+    @test length(model.cons) == 1
+    @test PC.is_integer(model.cons[1])
 end
