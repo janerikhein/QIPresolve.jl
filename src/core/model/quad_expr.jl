@@ -699,6 +699,10 @@ stored in `qe`.
 Notes
 - Updates `quad_buf` and `lin_buf` in-place (no allocations, no views).
 - `other_id` (the "y") is not otherwise changed; only `var_id` is substituted.
+- Returns unchanged if `var_id` is absent.
+- Treats self-substitution (`var_id == other_id`) as a no-op.
+- Requires `other_id` to already exist unless `b == 0.0`, in which case the
+  substitution reduces to an affine transform on `var_id`.
 - If `invert=true`, applies the inverse transform for the provided `(a, b, c)`.
 - Coefficients are stored canonically in the upper triangle of `quad_buf`.
 """
@@ -718,13 +722,12 @@ function lin_transform!(
     posk = var_pos(qe, var_id)
     posk == 0 && return qe
     if var_id == other_id
-        return affine_transform!(qe, var_id, a + b, c)
+        return qe
     end
 
     posm = var_pos(qe, other_id)
     if posm == 0
-        b == 0.0 || (posm = add_var!(qe, other_id; clear_buf = true))
-        b == 0.0 && return affine_transform!(qe, var_id, a, c)
+        return b == 0.0 ? affine_transform!(qe, var_id, a, c) : qe
     end
 
     pk = qe.perm[posk]  # physical index of var_id (k)

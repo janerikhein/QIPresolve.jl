@@ -20,6 +20,27 @@ function parity_edge_matrix(n::Int, edges::Vector{Tuple{Int, Int}})
     return mat
 end
 
+function parity_single_distance_model()
+    vars = Dict{PC.VarId, PC.IntVar}(i => PC.IntVar(-20.0, 20.0) for i in 1:4)
+    con = PC.Constraint(
+        parity_next_con_id(),
+        PC.QuadExpr(
+            ParityQuadTerm[
+                (1.0, 1, 1),
+                (1.0, 2, 2),
+                (-2.0, 1, 2),
+                (1.0, 3, 3),
+                (1.0, 4, 4),
+                (-2.0, 3, 4),
+            ],
+            ParityLinTerm[],
+        ),
+        402.0,
+        402.0,
+    )
+    return PC.QPModel(vars, [con], parity_empty_objective(), :min)
+end
+
 function parity_eval_equivalent(model0, model, var_id, scale, offset)
     con0 = model0.cons[1]
     con = model.cons[1]
@@ -163,7 +184,6 @@ end
     parity_model = PC.build_parity_model(model)
     propagator = PC.PropagationManager(parity_model.pos_to_var_id)
 
-    PC.reformulate_bipartite_cons!(parity_model)
     PC.propagate!(parity_model, propagator)
     PC.gauss_jordan_xor!(parity_model)
     PC.propagate!(parity_model, propagator)
@@ -405,7 +425,7 @@ end
     @test isempty(model.cons)
 end
 
-@testset "parity_presolve! cleans up fixed parity singletons" begin
+@testset "parity_presolve! removes fixed parity singletons during normalization" begin
     vars = Dict{PC.VarId, PC.IntVar}(1 => PC.IntVar(0.0, 1.0))
     con = PC.Constraint(
         parity_next_con_id(),
@@ -419,8 +439,7 @@ end
 
     @test out === model
     @test !model.infeasible
-    @test haskey(model.vars, 1)
-    @test model.vars[1] == PC.IntVar(1.0, 1.0)
+    @test !haskey(model.vars, 1)
     @test isempty(model.cons)
 end
 
@@ -521,9 +540,54 @@ end
 
     parity_model = PC.build_parity_model(model)
     propagator = PC.PropagationManager(parity_model.pos_to_var_id)
-    PC.reformulate_bipartite_cons!(parity_model)
     PC.propagate!(parity_model, propagator)
     @test !parity_model.infeasible
+end
+
+@testset "parity_presolve! splits the single-distance xor-and row and halves all domains" begin
+    extraction_model = parity_single_distance_model()
+    parity_model = PC.build_parity_model(extraction_model)
+
+    @test parity_model.pos_to_var_id == [1, 2, 3, 4]
+    @test parity_model.var_id_to_pos == Dict(i => i for i in 1:4)
+    @test length(parity_model.cons) == 2
+
+    @test parity_model.cons[1].meta.is_pure_xor
+    @test parity_model.cons[1].par == BitVector([1, 1, 1, 1])
+    @test !parity_model.cons[1].rhs
+
+    @test !parity_model.cons[2].meta.is_pure_xor
+    @test parity_model.cons[2].par == falses(4)
+    @test parity_model.cons[2].conj == parity_edge_matrix(4, [(1, 3), (1, 4), (2, 3), (2, 4)])
+    @test parity_model.cons[2].rhs
+
+    phase_model = parity_single_distance_model()
+    propagator = PC.PropagationManager(PC.VarId[])
+    phase_stats = PC.parity_presolve_phase!(phase_model, propagator)
+
+    @test phase_stats == (changed = true, fixed_parities = 0, pattern_rewritten_vars = 4)
+    @test !phase_model.infeasible
+    @test phase_model.vars[1] == PC.IntVar(-10.0, 10.0)
+    @test phase_model.vars[2] == PC.IntVar(-10.0, 10.0)
+    @test phase_model.vars[3] == PC.IntVar(-10.0, 10.0)
+    @test phase_model.vars[4] == PC.IntVar(-10.0, 10.0)
+    @test haskey(phase_model.vars, 5)
+    @test haskey(phase_model.vars, 6)
+    @test PC.is_binary(phase_model.vars[5])
+    @test PC.is_binary(phase_model.vars[6])
+
+    full_model = parity_single_distance_model()
+    PC.parity_presolve!(full_model)
+
+    @test !full_model.infeasible
+    @test sort!(collect(keys(full_model.vars))) == [1, 2, 3, 4, 5, 6]
+    @test full_model.vars[1] == PC.IntVar(-10.0, 10.0)
+    @test full_model.vars[2] == PC.IntVar(-10.0, 10.0)
+    @test full_model.vars[3] == PC.IntVar(-10.0, 10.0)
+    @test full_model.vars[4] == PC.IntVar(-10.0, 10.0)
+    @test PC.is_binary(full_model.vars[5])
+    @test PC.is_binary(full_model.vars[6])
+    @test length(full_model.cons) == 9
 end
 
 @testset "parity_presolve_phase! reuses one propagator across multiple phases" begin
@@ -615,4 +679,278 @@ end
     @test model.cons[1].lhs == model0.cons[1].lhs
     @test model.cons[1].rhs == model0.cons[1].rhs
     @test collect(PC.vars(model.cons[1])) == collect(PC.vars(model0.cons[1]))
+end
+
+@testset "postsolve returns original variables for untouched mappings" begin
+    postsolver = PC.ParityPostsolver([2, 1])
+    reduced_solution = Dict{PC.VarId, Float64}(1 => 3.0, 2 => -1.0, 9 => 7.0)
+
+    original_solution = PC.postsolve(postsolver, reduced_solution)
+
+    @test original_solution == Dict{PC.VarId, Float64}(1 => 3.0, 2 => -1.0)
+    @test original_solution !== reduced_solution
+end
+
+@testset "postsolve adds normalization offsets for shifted binaries" begin
+    postsolver = PC.ParityPostsolver([1])
+    PC.add_reconstruction_offset!(postsolver, 1, 3.0)
+
+    original_solution = PC.postsolve(postsolver, Dict{PC.VarId, Float64}(1 => 1.0))
+
+    @test original_solution == Dict{PC.VarId, Float64}(1 => 4.0)
+end
+
+@testset "postsolve rebuilds multiple fixed low-order bits in LSB order" begin
+    postsolver = PC.ParityPostsolver([1])
+    PC.append_fixed_bit!(postsolver, 1, true)
+    PC.append_fixed_bit!(postsolver, 1, false)
+
+    original_solution = PC.postsolve(postsolver, Dict{PC.VarId, Float64}(1 => 2.0))
+
+    @test original_solution == Dict{PC.VarId, Float64}(1 => 9.0)
+end
+
+@testset "postsolve evaluates live binary bit references" begin
+    postsolver = PC.ParityPostsolver([1, 2])
+    PC.append_binary_bit!(postsolver, 1, 7)
+    PC.append_binary_bit!(postsolver, 2, 7; negated = true)
+
+    original_solution = PC.postsolve(postsolver, Dict{PC.VarId, Float64}(1 => 2.0, 2 => 2.0, 7 => 1.0))
+
+    @test original_solution == Dict{PC.VarId, Float64}(1 => 5.0, 2 => 4.0)
+end
+
+@testset "fix_parities! and fix_vars! keep removed transformed values in the postsolver" begin
+    vars = Dict{PC.VarId, PC.IntVar}(1 => PC.IntVar(1.0, 1.0))
+    model = PC.QPModel(vars, PC.Constraint[], parity_empty_objective(), :min)
+    manager = PC.PropagationManager([1])
+    postsolver = PC.ParityPostsolver(keys(vars))
+    PC.fix_var!(manager, 1, true)
+
+    @test PC.fix_parities!(model, manager, postsolver) == 1
+    PC.fix_vars!(model, postsolver)
+
+    var_data = postsolver.var_data[1]
+    @test !haskey(model.vars, 1)
+    @test var_data.current_var_id === nothing
+    @test var_data.fixed_high_order == 0.0
+    @test length(var_data.bits) == 1
+    @test var_data.bits[1].kind == PC.FIXED1
+    @test var_data.bits[1].ref_var_id === nothing
+    @test PC.postsolve(postsolver, Dict{PC.VarId, Float64}()) == Dict{PC.VarId, Float64}(1 => 1.0)
+end
+
+@testset "fix_parity_patterns! postsolve resolves helper vars fixed later" begin
+    vars = Dict{PC.VarId, PC.IntVar}(
+        1 => PC.IntVar(0.0, 5.0),
+        2 => PC.IntVar(1.0, 6.0),
+    )
+    con = PC.Constraint(
+        parity_next_con_id(),
+        PC.QuadExpr(ParityQuadTerm[], ParityLinTerm[(1.0, 1), (1.0, 2)]),
+        0.0,
+        10.0,
+    )
+    model = PC.QPModel(vars, [con], parity_empty_objective(), :min)
+    manager = parity_prepare_manager(PC.VarLit(1, false), PC.VarLit(2, true))
+    postsolver = PC.ParityPostsolver(keys(vars))
+
+    @test PC.fix_parity_patterns!(model, manager, postsolver) == 2
+    @test length(postsolver.var_data[1].bits) == 1
+    @test postsolver.var_data[1].bits[1].kind == PC.BINVAR
+    @test postsolver.var_data[1].bits[1].ref_var_id == 3
+    @test length(postsolver.var_data[2].bits) == 1
+    @test postsolver.var_data[2].bits[1].kind == PC.NEGATED_BINVAR
+    @test postsolver.var_data[2].bits[1].ref_var_id == 3
+
+    PC.set_var_bounds!(model, 3, 1.0, 1.0)
+    PC.fix_vars!(model, postsolver)
+
+    @test !haskey(model.vars, 3)
+    @test postsolver.var_data[3].current_var_id === nothing
+    @test postsolver.var_data[3].fixed_high_order == 1.0
+    @test isempty(postsolver.var_data[3].bits)
+    @test postsolver.var_data[1].bits[1].kind == PC.BINVAR
+    @test postsolver.var_data[1].bits[1].ref_var_id == 3
+    @test postsolver.var_data[2].bits[1].kind == PC.NEGATED_BINVAR
+    @test postsolver.var_data[2].bits[1].ref_var_id == 3
+    @test PC.postsolve(postsolver, Dict{PC.VarId, Float64}(1 => 2.0, 2 => 3.0)) ==
+          Dict{PC.VarId, Float64}(1 => 5.0, 2 => 6.0)
+end
+
+@testset "fix_parity_patterns! postsolve resolves helper vars parity-fixed and removed later" begin
+    vars = Dict{PC.VarId, PC.IntVar}(
+        1 => PC.IntVar(0.0, 5.0),
+        2 => PC.IntVar(1.0, 6.0),
+    )
+    con = PC.Constraint(
+        parity_next_con_id(),
+        PC.QuadExpr(ParityQuadTerm[], ParityLinTerm[(1.0, 1), (1.0, 2)]),
+        0.0,
+        10.0,
+    )
+    model = PC.QPModel(vars, [con], parity_empty_objective(), :min)
+    manager = parity_prepare_manager(PC.VarLit(1, false), PC.VarLit(2, true))
+    postsolver = PC.ParityPostsolver(keys(vars))
+
+    @test PC.fix_parity_patterns!(model, manager, postsolver) == 2
+
+    helper_manager = PC.PropagationManager([3])
+    PC.fix_var!(helper_manager, 3, true)
+    @test PC.fix_parities!(model, helper_manager, postsolver) == 1
+    PC.fix_vars!(model, postsolver)
+
+    @test !haskey(model.vars, 3)
+    @test haskey(postsolver.var_data, 3)
+    @test postsolver.var_data[3].current_var_id === nothing
+    @test postsolver.var_data[3].fixed_high_order == 0.0
+    @test length(postsolver.var_data[3].bits) == 1
+    @test postsolver.var_data[3].bits[1].kind == PC.FIXED1
+    @test postsolver.var_data[3].bits[1].ref_var_id === nothing
+    @test postsolver.var_data[1].bits[1].kind == PC.BINVAR
+    @test postsolver.var_data[1].bits[1].ref_var_id == 3
+    @test postsolver.var_data[2].bits[1].kind == PC.NEGATED_BINVAR
+    @test postsolver.var_data[2].bits[1].ref_var_id == 3
+    @test PC.postsolve(postsolver, Dict{PC.VarId, Float64}(1 => 2.0, 2 => 3.0)) ==
+          Dict{PC.VarId, Float64}(1 => 5.0, 2 => 6.0)
+end
+
+@testset "postsolve recursively resolves nested helper vars introduced by repeated parity patterns" begin
+    vars = Dict{PC.VarId, PC.IntVar}(
+        1 => PC.IntVar(0.0, 5.0),
+        2 => PC.IntVar(0.0, 5.0),
+        4 => PC.IntVar(0.0, 3.0),
+    )
+    model = PC.QPModel(vars, PC.Constraint[], parity_empty_objective(), :min)
+    manager = PC.PropagationManager([1, 2, 4])
+    postsolver = PC.ParityPostsolver(keys(vars))
+
+    PC.add_equivalence!(manager, PC.VarLit(1, false), PC.VarLit(2, false))
+    PC.update_sccs!(manager)
+    while PC.pop_substitution!(manager) !== nothing
+    end
+
+    @test PC.fix_parity_patterns!(model, manager, postsolver) == 2
+    @test haskey(model.vars, 5)
+    @test haskey(postsolver.var_data, 5)
+    @test postsolver.var_data[1].bits[1].kind == PC.BINVAR
+    @test postsolver.var_data[1].bits[1].ref_var_id == 5
+    @test postsolver.var_data[2].bits[1].kind == PC.BINVAR
+    @test postsolver.var_data[2].bits[1].ref_var_id == 5
+
+    PC.add_equivalence!(manager, PC.VarLit(5, false), PC.VarLit(4, false))
+    PC.update_sccs!(manager)
+    while PC.pop_substitution!(manager) !== nothing
+    end
+
+    @test PC.fix_parity_patterns!(model, manager, postsolver) == 2
+    @test haskey(model.vars, 6)
+    PC.fix_vars!(model, postsolver)
+
+    @test !haskey(model.vars, 5)
+    @test postsolver.var_data[5].current_var_id === nothing
+    @test postsolver.var_data[5].fixed_high_order == 0.0
+    @test length(postsolver.var_data[5].bits) == 1
+    @test postsolver.var_data[5].bits[1].kind == PC.BINVAR
+    @test postsolver.var_data[5].bits[1].ref_var_id == 6
+    @test postsolver.var_data[1].bits[1].kind == PC.BINVAR
+    @test postsolver.var_data[1].bits[1].ref_var_id == 5
+    @test postsolver.var_data[2].bits[1].kind == PC.BINVAR
+    @test postsolver.var_data[2].bits[1].ref_var_id == 5
+    @test PC.postsolve(postsolver, Dict{PC.VarId, Float64}(1 => 1.0, 2 => 2.0, 4 => 1.0, 6 => 1.0)) ==
+          Dict{PC.VarId, Float64}(1 => 3.0, 2 => 5.0, 4 => 3.0)
+end
+
+@testset "parity_presolve! records repeated parity reductions in bit order" begin
+    vars = Dict{PC.VarId, PC.IntVar}(1 => PC.IntVar(0.0, 4.0))
+    con = PC.Constraint(
+        parity_next_con_id(),
+        PC.QuadExpr(ParityQuadTerm[(1.0, 1, 1)], ParityLinTerm[]),
+        4.0,
+        4.0,
+    )
+    model = PC.QPModel(vars, [con], parity_empty_objective(), :min)
+    postsolver = PC.ParityPostsolver(keys(vars))
+
+    PC.parity_presolve!(model, postsolver)
+
+    var_data = postsolver.var_data[1]
+    @test !model.infeasible
+    @test isempty(model.vars)
+    @test var_data.current_var_id === nothing
+    @test var_data.fixed_high_order == 0.0
+    @test length(var_data.bits) == 2
+    @test var_data.bits[1].kind == PC.FIXED0
+    @test var_data.bits[2].kind == PC.FIXED1
+    @test PC.postsolve(postsolver, Dict{PC.VarId, Float64}()) == Dict{PC.VarId, Float64}(1 => 2.0)
+end
+
+@testset "parity_presolve! reconstructs shifted binaries normalized before parity" begin
+    vars = Dict{PC.VarId, PC.IntVar}(1 => PC.IntVar(3.0, 4.0))
+    model = PC.QPModel(vars, PC.Constraint[], parity_empty_objective(), :min)
+    postsolver = PC.ParityPostsolver(keys(vars))
+
+    PC.parity_presolve!(model, postsolver)
+
+    @test !model.infeasible
+    @test model.vars[1] == PC.IntVar(0.0, 1.0)
+    @test PC.postsolve(postsolver, Dict{PC.VarId, Float64}(1 => 0.0)) == Dict{PC.VarId, Float64}(1 => 3.0)
+    @test PC.postsolve(postsolver, Dict{PC.VarId, Float64}(1 => 1.0)) == Dict{PC.VarId, Float64}(1 => 4.0)
+end
+
+@testset "parity_presolve! reconstructs shifted binaries removed during normalization" begin
+    vars = Dict{PC.VarId, PC.IntVar}(1 => PC.IntVar(3.0, 4.0))
+    con = PC.Constraint(
+        parity_next_con_id(),
+        PC.QuadExpr(ParityQuadTerm[], ParityLinTerm[(1.0, 1)]),
+        4.0,
+        4.0,
+    )
+    model = PC.QPModel(vars, [con], parity_empty_objective(), :min)
+    postsolver = PC.ParityPostsolver(keys(vars))
+
+    PC.parity_presolve!(model, postsolver)
+
+    @test !model.infeasible
+    @test isempty(model.vars)
+    @test isempty(model.cons)
+    @test PC.postsolve(postsolver, Dict{PC.VarId, Float64}()) == Dict{PC.VarId, Float64}(1 => 4.0)
+end
+
+@testset "parity_presolve_phase! normalizes gcd-reducible constraints at phase entry" begin
+    vars = Dict{PC.VarId, PC.IntVar}(1 => PC.IntVar(0.0, 1.0))
+    con = PC.Constraint(
+        parity_next_con_id(),
+        PC.QuadExpr(ParityQuadTerm[], ParityLinTerm[(2.0, 1)]),
+        2.0,
+        2.0,
+    )
+    model = PC.QPModel(vars, [con], parity_empty_objective(), :min)
+    propagator = PC.PropagationManager(PC.VarId[])
+
+    stats = PC.parity_presolve_phase!(model, propagator)
+
+    @test !model.infeasible
+    @test isempty(model.vars)
+    @test isempty(model.cons)
+    @test !stats.changed
+end
+
+@testset "parity_presolve! accepts shifted binary inputs without pre-normalization" begin
+    vars = Dict{PC.VarId, PC.IntVar}(
+        1 => PC.IntVar(2.0, 3.0),
+        2 => PC.IntVar(0.0, 1.0),
+    )
+    con = PC.Constraint(
+        parity_next_con_id(),
+        PC.QuadExpr(ParityQuadTerm[], ParityLinTerm[(1.0, 1), (1.0, 2)]),
+        3.0,
+        3.0,
+    )
+    model = PC.QPModel(vars, [con], parity_empty_objective(), :min)
+
+    PC.parity_presolve!(model)
+
+    @test !model.infeasible
+    @test all(PC.is_binary(var) for var in values(model.vars))
 end

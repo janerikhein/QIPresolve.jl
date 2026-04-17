@@ -7,6 +7,19 @@ const _NEXT_CON_ID = Ref(0)
 
 next_con_id() = (_NEXT_CON_ID[] += 1)
 
+@testset "QuadExpr show uses canonical bilinear coefficients" begin
+    qe = PC.QuadExpr(QuadTerm[(3.0, 1, 1), (2.0, 1, 2)], LinTerm[(1.0, 2)])
+    rendered = chomp(sprint(show, qe))
+
+    @test occursin("3.0x1^2", rendered)
+    @test occursin("2.0x1x2", rendered)
+    @test !occursin("4.0x1x2", rendered)
+    @test occursin("x2", rendered)
+
+    diagonal_only = PC.QuadExpr(QuadTerm[(5.0, 2, 2)], LinTerm[])
+    @test chomp(sprint(show, diagonal_only)) == "5.0x2^2"
+end
+
 @testset "Constraint normalize!" begin
     quad_terms = QuadTerm[(2.0, 1, 1), (1.0, 1, 2)]
     lin_terms = LinTerm[(3.0, 1), (-1.0, 2)]
@@ -138,6 +151,22 @@ end
     )
     @test !PC.is_integer(odd_bilinear)
 
+    permuted_even_qe = PC.QuadExpr(
+        QuadTerm[(2.0, 1, 1), (4.0, 2, 3)],
+        LinTerm[(2.0, 2)],
+    )
+    PC.remove_var!(permuted_even_qe, 1)
+    permuted_even = PC.Constraint(next_con_id(), permuted_even_qe, -2.0, 6.0)
+    @test PC.is_integer(permuted_even)
+
+    permuted_odd_qe = PC.QuadExpr(
+        QuadTerm[(2.0, 1, 1), (3.0, 2, 3)],
+        LinTerm[],
+    )
+    PC.remove_var!(permuted_odd_qe, 1)
+    permuted_odd = PC.Constraint(next_con_id(), permuted_odd_qe, -2.0, 3.0)
+    @test !PC.is_integer(permuted_odd)
+
     fractional_normalized_bound = PC.Constraint(
         next_con_id(),
         PC.QuadExpr(QuadTerm[], LinTerm[(1.0, 1)]; constant = 0.5),
@@ -161,6 +190,72 @@ end
         4.0,
     )
     @test PC.is_integer(infinite_bound)
+end
+
+@testset "Constraint cached integrality maintenance" begin
+    normalized = PC.Constraint(
+        next_con_id(),
+        PC.QuadExpr(QuadTerm[(2.0, 1, 1), (4.0, 1, 2)], LinTerm[(2.0, 1)]; constant = 1.0),
+        1.0,
+        5.0,
+    )
+    @test PC.is_integer(normalized)
+    PC.normalize!(normalized)
+    @test PC.is_integer(normalized)
+
+    symmetrized = PC.Constraint(
+        next_con_id(),
+        PC.QuadExpr(QuadTerm[(2.0, 1, 1), (4.0, 1, 2)], LinTerm[(2.0, 1), (-2.0, 2)]),
+        -3.0,
+        5.0,
+    )
+    @test PC.is_integer(symmetrized)
+    PC.symmetrize!(symmetrized)
+    @test PC.is_integer(symmetrized)
+
+    scaled = PC.Constraint(
+        next_con_id(),
+        PC.QuadExpr(QuadTerm[(6.0, 1, 1), (8.0, 1, 2)], LinTerm[(4.0, 1), (-2.0, 2)]),
+        -4.0,
+        10.0,
+    )
+    @test PC.is_integer(scaled)
+    @test PC.scale_gcd!(scaled)
+    @test PC.is_integer(scaled)
+end
+
+@testset "Constraint integral transforms enforce integer preservation" begin
+    affine_con = PC.Constraint(
+        next_con_id(),
+        PC.QuadExpr(QuadTerm[(2.0, 1, 1), (4.0, 1, 2)], LinTerm[(2.0, 1)]),
+        0.0,
+        6.0,
+    )
+    @test PC.is_integer(affine_con)
+    @test_throws ArgumentError PC.affine_transform!(affine_con, 1, 1.0, 0.5)
+    @test PC.is_integer(affine_con)
+
+    lin_con = PC.Constraint(
+        next_con_id(),
+        PC.QuadExpr(QuadTerm[(2.0, 1, 1), (4.0, 1, 2)], LinTerm[(2.0, 1), (2.0, 2)]),
+        -2.0,
+        8.0,
+    )
+    @test PC.is_integer(lin_con)
+    @test_throws ArgumentError PC.lin_transform!(lin_con, 1, 2, 1.0, 0.5)
+    @test PC.is_integer(lin_con)
+end
+
+@testset "Constraint integer-valued transforms refresh cached integrality" begin
+    affine_con = PC.Constraint(
+        next_con_id(),
+        PC.QuadExpr(QuadTerm[(1.0, 1, 2)], LinTerm[]),
+        0.0,
+        2.0,
+    )
+    @test !PC.is_integer(affine_con)
+    PC.affine_transform!(affine_con, 1, 2.0, 0.0)
+    @test PC.is_integer(affine_con)
 end
 
 @testset "Constraint scale_gcd!" begin
@@ -208,6 +303,29 @@ end
     @test PC.get_quad_coeff(unit_gcd.qe, 1, 1) == 3.0
     @test PC.get_quad_coeff(unit_gcd.qe, 1, 2) == 2.0
     @test PC.get_lin_coeff(unit_gcd.qe, 1) == 5.0
+
+    permuted_unit_qe = PC.QuadExpr(
+        QuadTerm[(2.0, 1, 1), (2.0, 2, 2), (2.0, 2, 3)],
+        LinTerm[(2.0, 2)],
+    )
+    PC.remove_var!(permuted_unit_qe, 1)
+    permuted_unit = PC.Constraint(next_con_id(), permuted_unit_qe, 0.0, 6.0)
+    @test PC.is_integer(permuted_unit)
+    @test !PC.scale_gcd!(permuted_unit)
+    @test PC.get_quad_coeff(permuted_unit.qe, 2, 3) == 2.0
+
+    permuted_scaled_qe = PC.QuadExpr(
+        QuadTerm[(2.0, 1, 1), (6.0, 2, 2), (4.0, 2, 3)],
+        LinTerm[(2.0, 2)],
+    )
+    PC.remove_var!(permuted_scaled_qe, 1)
+    permuted_scaled = PC.Constraint(next_con_id(), permuted_scaled_qe, 0.0, 12.0)
+    @test PC.is_integer(permuted_scaled)
+    @test PC.scale_gcd!(permuted_scaled)
+    @test PC.get_quad_coeff(permuted_scaled.qe, 2, 2) == 3.0
+    @test PC.get_quad_coeff(permuted_scaled.qe, 2, 3) == 2.0
+    @test PC.get_lin_coeff(permuted_scaled.qe, 2) == 1.0
+    @test PC.is_integer(permuted_scaled)
 
     infinite_bound = PC.Constraint(
         next_con_id(),

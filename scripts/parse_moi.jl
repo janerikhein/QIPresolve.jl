@@ -5,7 +5,7 @@ import QIPresolve as QIP
 
 PC = QIP.PresolvingCore
 
-moi = QIP.load_moi_model("large2.mof.json")
+moi = QIP.load_moi_model("small.mof.json")
 qp_model_builder = QIP.from_moi(moi)
 qp_model = QIP.build_model(qp_model_builder)
 PC.fix_vars!(qp_model)
@@ -23,7 +23,7 @@ println(qp_model)
 while !qp_model.infeasible
     global phase_idx += 1
     stats = PC.parity_presolve_phase!(qp_model, propagator)
-    PC.scale_constraints_gcd!(qp_model)
+    #PC.scale_constraints_gcd!(qp_model)
     println(
         "phase $phase_idx: changed=$(stats.changed) " *
         "fixed_parities=$(stats.fixed_parities) " *

@@ -4,6 +4,7 @@ include("model/quad_expr.jl")
 include("model/constraint.jl")
 include("parity/xor_constraint.jl")
 include("parity/propagation.jl")
+include("parity/postsolve.jl")
 include("model/qp_model.jl")
 include("parity/xor_model.jl")
 include("parity/presolve_parity.jl")
@@ -15,7 +16,10 @@ export
     QuadExpr,
     IntVar,
     Constraint,
-    QPModel
+    QPModel,
+    # Model transformations
+    fix_vars!,
+    normalize!
 
 
 end # module

@@ -101,8 +101,7 @@ This mutates `model` and normalizes constraints after the update.
 function var_bound_shift!(model::QPModel, var_id::VarId, shift::Float64)
     # apply shift to constraints
     for con in model.cons
-        affine_transform!(con.qe, var_id, 1.0, shift)
-        normalize!(con)
+        affine_transform!(con, var_id, 1.0, shift)
     end
     # apply shift to objective
     affine_transform!(model.obj_expr, var_id, 1.0, shift)
@@ -129,6 +128,182 @@ function affine_transform!(model::QPModel, var_id::VarId, scale::Float64, offset
     return affine_transform!(model.obj_expr, var_id, scale, offset)
 end
 
+@inline _canonicalize_zero(x::Float64) = (x == 0.0 ? 0.0 : x)
+
+@inline function _is_shifted_binary(var::IntVar)
+    return _is_integral_value(var.lb) && _is_integral_value(var.ub) && var.ub == var.lb + 1.0 && var.lb != 0.0
+end
+
+function _tighten_singleton_constraint!(model::QPModel, con::Constraint)
+    var_id = vars(con.qe)[1]
+    coeff = get_lin_coeff(con.qe, var_id)
+    @assert coeff != 0.0
+
+    var_bounds = model.vars[var_id]
+    bound1 = con.lhs / coeff
+    bound2 = con.rhs / coeff
+    singleton_lb = ceil(min(bound1, bound2))
+    singleton_ub = floor(max(bound1, bound2))
+    new_lb = max(var_bounds.lb, singleton_lb)
+    new_ub = min(var_bounds.ub, singleton_ub)
+    new_lb = _canonicalize_zero(new_lb)
+    new_ub = _canonicalize_zero(new_ub)
+
+    if new_lb > new_ub
+        model.infeasible = true
+        return false
+    end
+
+    if new_lb == var_bounds.lb && new_ub == var_bounds.ub
+        return false
+    end
+
+    model.vars[var_id] = IntVar(new_lb, new_ub)
+    return true
+end
+
+function _fix_vars_and_singletons!(model::QPModel, postsolver::Union{Nothing, ParityPostsolver})
+    model.infeasible && return false
+
+    changed = false
+    fixed_var_ids = VarId[]
+
+    for (var_id, var) in model.vars
+        if var.lb > var.ub
+            model.infeasible = true
+            return changed
+        end
+        var.lb == var.ub || continue
+        push!(fixed_var_ids, var_id)
+    end
+
+    for var_id in fixed_var_ids
+        haskey(model.vars, var_id) || continue
+        var = model.vars[var_id]
+        postsolver !== nothing && register_fixed_var!(postsolver, var_id, var.lb)
+        var_bound_shift!(model, var_id, var.lb)
+        @assert model.vars[var_id].lb == model.vars[var_id].ub == 0.0
+        for con in model.cons
+            remove_var!(con, var_id)
+        end
+        remove_var!(model.obj_expr, var_id)
+        delete!(model.vars, var_id)
+        changed = true
+    end
+
+    normalize!(model.obj_expr)
+
+    for i in reverse(eachindex(model.cons))
+        con = model.cons[i]
+        normalize!(con)
+
+        if is_empty(con.qe)
+            deleteat!(model.cons, i)
+            changed = true
+            continue
+        end
+
+        if is_singleton(con.qe)
+            tightened = _tighten_singleton_constraint!(model, con)
+            model.infeasible && return true
+            changed = changed || tightened
+            deleteat!(model.cons, i)
+            changed = true
+        end
+    end
+
+    return changed
+end
+
+function _normalize_shifted_binaries!(model::QPModel, postsolver::Union{Nothing, ParityPostsolver})
+    model.infeasible && return false
+
+    changed = false
+    shifted_binary_ids = VarId[]
+
+    for (var_id, var) in model.vars
+        _is_shifted_binary(var) || continue
+        push!(shifted_binary_ids, var_id)
+    end
+
+    for var_id in shifted_binary_ids
+        haskey(model.vars, var_id) || continue
+        var = model.vars[var_id]
+        _is_shifted_binary(var) || continue
+
+        postsolver !== nothing && add_reconstruction_offset!(postsolver, var_id, var.lb)
+        affine_transform!(model, var_id, 1.0, var.lb)
+        set_var_bounds!(model, var_id, 0.0, 1.0)
+        changed = true
+    end
+
+    return changed
+end
+
+function _fold_binary_diagonal!(qe::QuadExpr, binary_var_ids::AbstractVector{VarId})
+    changed = false
+
+    for var_id in binary_var_ids
+        coeff = get_quad_coeff(qe, var_id, var_id)
+        coeff == 0.0 && continue
+        add_lin_coeff!(qe, var_id, coeff) || continue
+        set_quad_coeff!(qe, var_id, var_id, 0.0)
+        changed = true
+    end
+
+    changed && normalize!(qe)
+    return changed
+end
+
+function _fold_binary_diagonal!(con::Constraint, binary_var_ids::AbstractVector{VarId})
+    changed = _fold_binary_diagonal!(con.qe, binary_var_ids)
+    changed || return false
+    normalize!(con)
+    _refresh_is_integer!(con)
+    return true
+end
+
+function _fold_binary_diagonal!(model::QPModel)
+    isempty(model.vars) && return false
+
+    binary_var_ids = [var_id for (var_id, var) in model.vars if is_binary(var)]
+    isempty(binary_var_ids) && return false
+
+    changed = _fold_binary_diagonal!(model.obj_expr, binary_var_ids)
+
+    for con in model.cons
+        changed = _fold_binary_diagonal!(con, binary_var_ids) || changed
+    end
+
+    return changed
+end
+
+normalize!(model::QPModel) = normalize!(model, nothing)
+
+function normalize!(model::QPModel, postsolver::Union{Nothing, ParityPostsolver})
+    model.infeasible && return model
+
+    while true
+        changed = false
+
+        changed = _fix_vars_and_singletons!(model, postsolver) || changed
+        model.infeasible && return model
+
+        changed = _normalize_shifted_binaries!(model, postsolver) || changed
+        model.infeasible && return model
+
+        changed = _fold_binary_diagonal!(model) || changed
+        model.infeasible && return model
+
+        changed = (scale_constraints_gcd!(model) > 0) || changed
+        model.infeasible && return model
+
+        changed || break
+    end
+
+    return model
+end
+
 """
     fix_parities!(model, propagator) -> Int
 
@@ -137,7 +312,13 @@ where `offset` is `0` for even and `1` for odd.
 
 Returns the number of variables transformed.
 """
-function fix_parities!(model::QPModel, propagator::PropagationManager)
+fix_parities!(model::QPModel, propagator::PropagationManager) = fix_parities!(model, propagator, nothing)
+
+function fix_parities!(
+    model::QPModel,
+    propagator::PropagationManager,
+    postsolver::Union{Nothing, ParityPostsolver},
+)
     nfixed = 0
 
     for lit in propagator.pos_to_lit
@@ -154,6 +335,7 @@ function fix_parities!(model::QPModel, propagator::PropagationManager)
         new_lb == 0.0 && (new_lb = 0.0)
         new_ub == 0.0 && (new_ub = 0.0)
 
+        postsolver !== nothing && append_fixed_bit!(postsolver, lit.vid, val)
         affine_transform!(model, lit.vid, 2.0, offset)
         set_var_bounds!(model, lit.vid, new_lb, new_ub)
         nfixed += 1
@@ -182,11 +364,21 @@ function lin_transform!(
         lin_transform!(con, var_id, other_id, a, b; c = c)
     end
 
+    if b != 0.0 && var_id != other_id && has_var(model.obj_expr, var_id) && !has_var(model.obj_expr, other_id)
+        add_var!(model.obj_expr, other_id; clear_buf = true)
+    end
+
     # apply transformation to objective expression
     return lin_transform!(model.obj_expr, var_id, other_id, a, b; c = c)
 end
 
-function fix_parity_patterns!(model::QPModel, propagator::ParityPropagator)
+fix_parity_patterns!(model::QPModel, propagator::ParityPropagator) = fix_parity_patterns!(model, propagator, nothing)
+
+function fix_parity_patterns!(
+    model::QPModel,
+    propagator::ParityPropagator,
+    postsolver::Union{Nothing, ParityPostsolver},
+)
     candidate_vids = VarId[]
 
     for scc_pos in eachindex(propagator.scc_pos_to_rep_pos)
@@ -230,6 +422,7 @@ function fix_parity_patterns!(model::QPModel, propagator::ParityPropagator)
         @assert length(unique(lit.vid for lit in component_lits)) == length(component_lits)
 
         b_scc = add_var!(model, IntVar(0.0, 1.0))
+        postsolver !== nothing && ensure_tracked_var!(postsolver, b_scc)
 
         for lit in component_lits
             var = model.vars[lit.vid]
@@ -241,10 +434,12 @@ function fix_parity_patterns!(model::QPModel, propagator::ParityPropagator)
             if lit.neg
                 l0, u0 = o_lo, o_hi
                 l1, u1 = e_lo, e_hi
+                postsolver !== nothing && append_binary_bit!(postsolver, lit.vid, b_scc; negated = true)
                 lin_transform!(model, lit.vid, b_scc, 2.0, -1.0; c = 1.0)
             else
                 l0, u0 = e_lo, e_hi
                 l1, u1 = o_lo, o_hi
+                postsolver !== nothing && append_binary_bit!(postsolver, lit.vid, b_scc)
                 lin_transform!(model, lit.vid, b_scc, 2.0, 1.0)
             end
 
@@ -277,49 +472,9 @@ function fix_parity_patterns!(model::QPModel, propagator::ParityPropagator)
 end
 
 
-function fix_vars!(model::QPModel)
-    model.infeasible && return model
+fix_vars!(model::QPModel) = fix_vars!(model, nothing)
 
-    for (var_id, var) in model.vars
-        if var.lb > var.ub
-            model.infeasible = true
-            return model
-        end
-        var.lb != var.ub && continue
-        affine_transform!(model, var_id, 1.0, var.lb)
-        @assert model.vars[var_id].lb == model.vars[var_id].ub == 0.0
-        for con in model.cons
-            remove_var!(con.qe, var_id)
-        end
-        delete!(model.vars, var_id)
-    end
-
-    # cleanup empty cons and cons becoming var bounds
-    for i in reverse(eachindex(model.cons))
-        con = model.cons[i]
-        normalize!(con)
-        if is_empty(con.qe)
-            deleteat!(model.cons, i)
-        end
-        if is_singleton(con.qe)
-            var_id = vars(con.qe)[1]
-            coeff = get_lin_coeff(con.qe, var_id)
-            @assert coeff != 0.0
-            var_bounds = model.vars[var_id]
-            bound1 = con.lhs / coeff
-            bound2 = con.rhs / coeff
-            singleton_lb = ceil(min(bound1, bound2))
-            singleton_ub = floor(max(bound1, bound2))
-            new_lb = max(var_bounds.lb, singleton_lb)
-            new_ub = min(var_bounds.ub, singleton_ub)
-            if new_lb > new_ub
-                model.infeasible = true
-                return model
-            end
-            model.vars[var_id] = IntVar(new_lb, new_ub)
-            deleteat!(model.cons, i)
-        end
-    end
-
+function fix_vars!(model::QPModel, postsolver::Union{Nothing, ParityPostsolver})
+    _fix_vars_and_singletons!(model, postsolver)
     return model
 end

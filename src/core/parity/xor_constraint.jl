@@ -77,90 +77,122 @@ function xor_con!(con::XorConstraint, other::XorConstraint)
 end
 
 
+abstract type _TripartitePropagationAction end
+
+struct _TripartiteImplicationAction <: _TripartitePropagationAction
+    x_idx::Int
+    y_idx::Int
+    r1::Bool
+    r2::Bool
+end
+
+struct _TripartiteRewriteAction <: _TripartitePropagationAction
+    support1::BitVector
+    rhs1::Bool
+    support2::BitVector
+    rhs2::Bool
+end
+
 """
-    split_bipartite(con::XorConstraint) -> Union{Nothing,Tuple{XorConstraint,XorConstraint}}
+    _tripartite_action(con::XorConstraint) -> Union{Nothing,_TripartitePropagationAction}
 
-Detect whether `con` encodes a full bipartite conjunctive structure and split
-it into two pure XOR constraints.
+Inspect an up-to-date XOR-AND row and detect the tripartite reformulations
+described in `scratch_files/instructions.txt`.
 
-Returns `nothing` when splitting is not applicable.
-
-TODO: implement extended bipartite check
-    1) check full bipartite of {(i,j): p_ij = 1, p_i=0, p_j=0} -> get two parts A,B
-    2) Let P = {i: p_i=1}
-    3) Check if p_ix = 1, iff i in P and x in A∪B
-    4) build xor cons over P∪A and P∪B
+Returns `nothing` when no valid tripartite action applies, an implication action
+for the `|X| = |Y| = 1` implication-only case, or a rewrite action containing
+the two derived XOR supports and right-hand sides.
 """
-function split_bipartite(con::XorConstraint)
+function _tripartite_action(con::XorConstraint)
+    @assert !con.meta.requires_update
+    con.meta.nnz_conj == 0 && return nothing
 
-    # rhs must be 1 for splitting
-    !con.rhs && return nothing
+    conj = con.conj
+    conj === nothing && return nothing
 
-    # constraint must be purely conjunctive
-    (con.conj === nothing || con.meta.is_pure_xor) && return nothing
-    any(con.par) && return nothing
+    n = length(con.par)
+    i = 0
 
-    # degree scan: allow 0 (isolated) plus at most two positive degrees
-    n = size(con.conj, 2)
-    degree_1 = 0
-    degree_2 = 0
-    piv = 0
-    degrees = Vector{Int}(undef, n)
+    @inbounds for k in 1:n
+        any(@view conj[:, k]) || continue
+        i = k
+        break
+    end
+    i == 0 && return nothing
+
+    N_i = @view conj[:, i]
+    j = findfirst(N_i)
+    @assert j !== nothing
+    N_j = @view conj[:, j]
+
+    Z = BitVector(copy(N_i))
+    Z .&= N_j
+
+    X = BitVector(copy(N_j))
+    X .&= .!Z
+
+    Y = BitVector(copy(N_i))
+    Y .&= .!Z
+
+    nx = count(X)
+    ny = count(Y)
+    nz = count(Z)
+    valid_pairs = Tuple{Bool, Bool}[]
+
+    for r1 in (false, true), r2 in (false, true)
+        expected_par = BitVector(copy(Z))
+        r2 && (expected_par .⊻= N_j)
+        r1 && (expected_par .⊻= N_i)
+
+        expected_par == con.par || continue
+        if (r1 & r2) == con.rhs && (nx > 1 || ny > 1 || nz > 0)
+            continue
+        end
+        push!(valid_pairs, (r1, r2))
+    end
+
+    isempty(valid_pairs) && return nothing
+    @assert length(valid_pairs) <= 1 "multiple valid (r1, r2) combinations found"
+
+    expected_x = BitVector(copy(Y))
+    expected_x .|= Z
+
+    expected_y = BitVector(copy(X))
+    expected_y .|= Z
+
+    expected_z = BitVector(copy(X))
+    expected_z .|= Y
 
     @inbounds for v in 1:n
-        deg = degrees[v] = count(@view con.conj[:, v])
-        if deg == 0
-            continue
-        elseif degree_1 == 0
-            degree_1 = deg
-            piv = v
-        elseif deg == degree_1
-            continue
-        elseif degree_2 == 0
-            degree_2 = deg
-        elseif deg == degree_2
-            continue
-        else
+        N_v = @view conj[:, v]
+
+        if X[v]
+            N_v == expected_x || return nothing
+        elseif Y[v]
+            N_v == expected_y || return nothing
+        elseif Z[v]
+            N_v == expected_z || return nothing
+        elseif any(N_v)
             return nothing
         end
     end
 
-    # constraint is empty
-    piv == 0 && return nothing
-
-    # construct the two possible neighborhoods
-    N1 = @view con.conj[:, piv]
-    first_neighbor = findfirst(N1)
-    N2 = @view con.conj[:, first_neighbor]
-
-    # check if neighborhoods are disjoint
-    any(N1 .& N2) && return nothing
-
-    # check for full bipartite
-    @inbounds for v in 1:n
-        col = @view con.conj[:, v]
-
-        if degrees[v] == 0
-            continue  # isolated is allowed
-        end
-
-        if N1[v]
-            # v is in N1-side => its neighborhood must be exactly N2
-            any(col .⊻ N2) && return nothing
-        elseif N2[v]
-            # v is in N2-side => its neighborhood must be exactly N1
-            any(col .⊻ N1) && return nothing
-        else
-            # v has edges but is in neither N1 nor N2 => impossible
-            return nothing
-        end
+    r1, r2 = valid_pairs[1]
+    if (r1 & r2) == con.rhs
+        @assert nx == 1 && ny == 1 && nz == 0
+        x_idx = findfirst(X)
+        y_idx = findfirst(Y)
+        @assert x_idx !== nothing
+        @assert y_idx !== nothing
+        return _TripartiteImplicationAction(x_idx, y_idx, r1, r2)
     end
 
-    # build the two resulting XOR constraints from the two neighborhoods
-    con1 = XorConstraint(BitVector(copy(N1)), true)
-    con2 = XorConstraint(BitVector(copy(N2)), true)
-
-    return con1, con2
+    return _TripartiteRewriteAction(
+        BitVector(copy(N_j)),
+        !r1,
+        BitVector(copy(N_i)),
+        !r2,
+    )
 end
 
 """
