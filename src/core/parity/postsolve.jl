@@ -10,6 +10,7 @@ end
 mutable struct VarReconstruction
     current_var_id::Union{VarId, Nothing}
     fixed_high_order::Union{Float64, Nothing}
+    additive_offset::Float64
     bits::Vector{StoredBit}
 end
 
@@ -24,7 +25,7 @@ function ParityPostsolver(var_ids)
     sizehint!(var_data, length(original_var_ids))
 
     for var_id in original_var_ids
-        var_data[var_id] = VarReconstruction(var_id, nothing, StoredBit[])
+        var_data[var_id] = VarReconstruction(var_id, nothing, 0.0, StoredBit[])
     end
 
     return ParityPostsolver(original_var_ids, var_data)
@@ -33,7 +34,7 @@ end
 is_tracked_var(postsolver::ParityPostsolver, var_id::VarId) = haskey(postsolver.var_data, var_id)
 
 function ensure_tracked_var!(postsolver::ParityPostsolver, var_id::VarId)
-    haskey(postsolver.var_data, var_id) || (postsolver.var_data[var_id] = VarReconstruction(var_id, nothing, StoredBit[]))
+    haskey(postsolver.var_data, var_id) || (postsolver.var_data[var_id] = VarReconstruction(var_id, nothing, 0.0, StoredBit[]))
     return postsolver
 end
 
@@ -77,6 +78,13 @@ function register_fixed_var!(postsolver::ParityPostsolver, var_id::VarId, value:
     return postsolver
 end
 
+function add_reconstruction_offset!(postsolver::ParityPostsolver, var_id::VarId, offset::Float64)
+    offset == 0.0 && return postsolver
+    ensure_tracked_var!(postsolver, var_id)
+    _get_var_data(postsolver, var_id).additive_offset += offset
+    return postsolver
+end
+
 function _resolve_var_value(
     postsolver::ParityPostsolver,
     var_id::VarId,
@@ -102,7 +110,7 @@ function _resolve_var_value(
         bit_weight *= 2.0
     end
 
-    value = high_order * bit_weight + bit_offset
+    value = high_order * bit_weight + bit_offset + var_data.additive_offset
     cache[var_id] = value
     delete!(active, var_id)
     return value

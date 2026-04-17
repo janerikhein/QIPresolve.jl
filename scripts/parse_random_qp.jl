@@ -11,7 +11,7 @@ const QuadTerm = Tuple{Float64, Int, Int}
 const LinTerm = Tuple{Float64, Int}
 
 const N_VARS = 30
-const N_CONS = 500
+const N_CONS = 30
 const VAR_LB = 0
 const VAR_UB = 100
 const SEED = 17

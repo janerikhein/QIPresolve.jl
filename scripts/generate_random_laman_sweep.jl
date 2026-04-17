@@ -13,7 +13,7 @@ PC = QIP.PresolvingCore
 GE = QIP.GraphEmbedding
 
 const N_VERTICES = 50
-const N_INSTANCES = 50
+const N_INSTANCES = 5
 const EXTRA_EDGE_STEP_FACTOR = 0.1
 const R = 100
 const PH2 = 0.5

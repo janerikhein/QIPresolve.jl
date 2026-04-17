@@ -12,15 +12,15 @@ PC = QIP.PresolvingCore
 const QuadTerm = Tuple{Float64, Int, Int}
 const LinTerm = Tuple{Float64, Int}
 
-const N_VARS = 100
-const N_INSTANCES = 50
+const N_VARS = 200
+const N_INSTANCES = 10
 const CONSTRAINT_STEP_FACTOR = 0.1
-const MAX_CONSTRAINT_FACTOR = 5
+const MAX_CONSTRAINT_FACTOR = 3
 const VAR_LB = 0
-const VAR_UB = 100
+const VAR_UB = 1
 const SEED_BASE = 19
 const MAX_MODEL_TRIES = 100
-const DENSITY = 0.005
+const DENSITY = 0.5
 
 
 function random_quadratic_terms(
@@ -30,7 +30,8 @@ function random_quadratic_terms(
 
     for i in 1:nvars
         rand(rng) < DENSITY || continue
-        coeff = rand(rng, -5:5)
+        coeff = rand(rng, -500:500)
+        #coeff = 0
         coeff == 0 && continue
         push!(terms, (Float64(coeff), i, i))
     end
@@ -38,7 +39,7 @@ function random_quadratic_terms(
     for i in 1:(nvars - 1)
         for j in (i + 1):nvars
             rand(rng) < DENSITY || continue
-            coeff = rand(rng, -5:5) * 2
+            coeff = rand(rng, -500:500) * 2
             coeff == 0 && continue
             push!(terms, (Float64(coeff), i, j))
         end

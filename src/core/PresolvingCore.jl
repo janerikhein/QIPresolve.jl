@@ -16,7 +16,10 @@ export
     QuadExpr,
     IntVar,
     Constraint,
-    QPModel
+    QPModel,
+    # Model transformations
+    fix_vars!,
+    normalize!
 
 
 end # module

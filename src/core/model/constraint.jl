@@ -12,18 +12,21 @@ where `qe` is a `QuadExpr` and `lhs`/`rhs` are scalar bounds.
 @inline _accumulate_gcd(g::Int, x::Float64) = gcd(g, abs(round(Int, x)))
 
 function _compute_is_integer(qe::QuadExpr, lhs::Float64, rhs::Float64)
-    quad_mat = quad(qe)
-    lin_vec = lin(qe)
-    nvars = qe.nvars
+    var_ids = vars(qe)
+    nvars = length(var_ids)
 
     for i in 1:nvars
-        _is_integral_value(lin_vec[i]) || return false
+        vid_i = var_ids[i]
 
-        diag_coeff = quad_mat[i, i]
+        lin_coeff = get_lin_coeff(qe, vid_i)
+        _is_integral_value(lin_coeff) || return false
+
+        diag_coeff = get_quad_coeff(qe, vid_i, vid_i)
         _is_integral_value(diag_coeff) || return false
 
         for j in (i + 1):nvars
-            bilinear_coeff = quad_mat[i, j]
+            vid_j = var_ids[j]
+            bilinear_coeff = get_quad_coeff(qe, vid_i, vid_j)
             _is_integral_value(bilinear_coeff) || return false
             iseven(round(Int, bilinear_coeff)) || return false
         end
@@ -84,22 +87,24 @@ function scale_gcd!(con::Constraint)
     normalize!(con)
     is_integer(con) || return false
 
-    quad_mat = quad(con.qe)
-    lin_vec = lin(con.qe)
-    nvars = con.qe.nvars
+    var_ids = collect(vars(con.qe))
+    nvars = length(var_ids)
     g = 0
 
     for i in 1:nvars
-        lin_coeff = lin_vec[i]
+        vid_i = var_ids[i]
+
+        lin_coeff = get_lin_coeff(con.qe, vid_i)
         lin_coeff == 0.0 || (g = _accumulate_gcd(g, lin_coeff))
         g == 1 && return false
 
-        diag_coeff = quad_mat[i, i]
+        diag_coeff = get_quad_coeff(con.qe, vid_i, vid_i)
         diag_coeff == 0.0 || (g = _accumulate_gcd(g, diag_coeff))
         g == 1 && return false
 
         for j in (i + 1):nvars
-            bilinear_coeff = quad_mat[i, j]
+            vid_j = var_ids[j]
+            bilinear_coeff = get_quad_coeff(con.qe, vid_i, vid_j)
             bilinear_coeff == 0.0 && continue
             half_coeff = bilinear_coeff / 2.0
             _is_integral_value(half_coeff) || return false
@@ -111,8 +116,23 @@ function scale_gcd!(con::Constraint)
     g <= 1 && return false
 
     scale = Float64(g)
-    quad_mat ./= scale
-    lin_vec ./= scale
+
+    for vid in var_ids
+        lin_coeff = get_lin_coeff(con.qe, vid)
+        lin_coeff == 0.0 || set_lin_coeff!(con.qe, vid, lin_coeff / scale)
+
+        diag_coeff = get_quad_coeff(con.qe, vid, vid)
+        diag_coeff == 0.0 || set_quad_coeff!(con.qe, vid, vid, diag_coeff / scale)
+    end
+
+    for i in 1:nvars
+        vid_i = var_ids[i]
+        for j in (i + 1):nvars
+            vid_j = var_ids[j]
+            bilinear_coeff = get_quad_coeff(con.qe, vid_i, vid_j)
+            bilinear_coeff == 0.0 || set_quad_coeff!(con.qe, vid_i, vid_j, bilinear_coeff / scale)
+        end
+    end
 
     if isfinite(con.lhs)
         con.lhs = ceil(con.lhs / scale)
@@ -123,6 +143,7 @@ function scale_gcd!(con::Constraint)
         con.rhs == 0.0 && (con.rhs = 0.0)
     end
 
+    _refresh_is_integer!(con)
     return true
 end
 

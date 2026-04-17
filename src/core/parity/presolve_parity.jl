@@ -118,7 +118,7 @@ function parity_presolve_phase!(
 )
     model.infeasible && return (changed = false, fixed_parities = 0, pattern_rewritten_vars = 0)
 
-    fix_vars!(model, postsolver)
+    normalize!(model, postsolver)
     model.infeasible && return (changed = false, fixed_parities = 0, pattern_rewritten_vars = 0)
 
     if isempty(model.vars)
@@ -163,11 +163,6 @@ function parity_presolve_phase!(
     pattern_rewritten_vars = fix_parity_patterns!(model, propagator, postsolver)
     changed = parities_fixed > 0 || pattern_rewritten_vars > 0
 
-    if changed
-        fix_vars!(model, postsolver)
-        model.infeasible && return (changed = false, fixed_parities = parities_fixed, pattern_rewritten_vars = pattern_rewritten_vars)
-    end
-
     finalize_phase!(propagator)
     return (changed = changed, fixed_parities = parities_fixed, pattern_rewritten_vars = pattern_rewritten_vars)
 end
@@ -178,12 +173,8 @@ function parity_presolve!(model::QPModel, postsolver::Union{Nothing, ParityPosts
     model.infeasible && return model
 
     propagator = PropagationManager(VarId[])
-    scale_constraints_gcd!(model)
     while true
         stats = parity_presolve_phase!(model, propagator, postsolver)
-        model.infeasible && break
-
-        scale_constraints_gcd!(model)
         model.infeasible && break
 
         !stats.changed && break

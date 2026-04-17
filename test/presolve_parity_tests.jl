@@ -425,7 +425,7 @@ end
     @test isempty(model.cons)
 end
 
-@testset "parity_presolve! cleans up fixed parity singletons" begin
+@testset "parity_presolve! removes fixed parity singletons during normalization" begin
     vars = Dict{PC.VarId, PC.IntVar}(1 => PC.IntVar(0.0, 1.0))
     con = PC.Constraint(
         parity_next_con_id(),
@@ -439,8 +439,7 @@ end
 
     @test out === model
     @test !model.infeasible
-    @test haskey(model.vars, 1)
-    @test model.vars[1] == PC.IntVar(1.0, 1.0)
+    @test !haskey(model.vars, 1)
     @test isempty(model.cons)
 end
 
@@ -692,6 +691,15 @@ end
     @test original_solution !== reduced_solution
 end
 
+@testset "postsolve adds normalization offsets for shifted binaries" begin
+    postsolver = PC.ParityPostsolver([1])
+    PC.add_reconstruction_offset!(postsolver, 1, 3.0)
+
+    original_solution = PC.postsolve(postsolver, Dict{PC.VarId, Float64}(1 => 1.0))
+
+    @test original_solution == Dict{PC.VarId, Float64}(1 => 4.0)
+end
+
 @testset "postsolve rebuilds multiple fixed low-order bits in LSB order" begin
     postsolver = PC.ParityPostsolver([1])
     PC.append_fixed_bit!(postsolver, 1, true)
@@ -875,4 +883,74 @@ end
     @test var_data.bits[1].kind == PC.FIXED0
     @test var_data.bits[2].kind == PC.FIXED1
     @test PC.postsolve(postsolver, Dict{PC.VarId, Float64}()) == Dict{PC.VarId, Float64}(1 => 2.0)
+end
+
+@testset "parity_presolve! reconstructs shifted binaries normalized before parity" begin
+    vars = Dict{PC.VarId, PC.IntVar}(1 => PC.IntVar(3.0, 4.0))
+    model = PC.QPModel(vars, PC.Constraint[], parity_empty_objective(), :min)
+    postsolver = PC.ParityPostsolver(keys(vars))
+
+    PC.parity_presolve!(model, postsolver)
+
+    @test !model.infeasible
+    @test model.vars[1] == PC.IntVar(0.0, 1.0)
+    @test PC.postsolve(postsolver, Dict{PC.VarId, Float64}(1 => 0.0)) == Dict{PC.VarId, Float64}(1 => 3.0)
+    @test PC.postsolve(postsolver, Dict{PC.VarId, Float64}(1 => 1.0)) == Dict{PC.VarId, Float64}(1 => 4.0)
+end
+
+@testset "parity_presolve! reconstructs shifted binaries removed during normalization" begin
+    vars = Dict{PC.VarId, PC.IntVar}(1 => PC.IntVar(3.0, 4.0))
+    con = PC.Constraint(
+        parity_next_con_id(),
+        PC.QuadExpr(ParityQuadTerm[], ParityLinTerm[(1.0, 1)]),
+        4.0,
+        4.0,
+    )
+    model = PC.QPModel(vars, [con], parity_empty_objective(), :min)
+    postsolver = PC.ParityPostsolver(keys(vars))
+
+    PC.parity_presolve!(model, postsolver)
+
+    @test !model.infeasible
+    @test isempty(model.vars)
+    @test isempty(model.cons)
+    @test PC.postsolve(postsolver, Dict{PC.VarId, Float64}()) == Dict{PC.VarId, Float64}(1 => 4.0)
+end
+
+@testset "parity_presolve_phase! normalizes gcd-reducible constraints at phase entry" begin
+    vars = Dict{PC.VarId, PC.IntVar}(1 => PC.IntVar(0.0, 1.0))
+    con = PC.Constraint(
+        parity_next_con_id(),
+        PC.QuadExpr(ParityQuadTerm[], ParityLinTerm[(2.0, 1)]),
+        2.0,
+        2.0,
+    )
+    model = PC.QPModel(vars, [con], parity_empty_objective(), :min)
+    propagator = PC.PropagationManager(PC.VarId[])
+
+    stats = PC.parity_presolve_phase!(model, propagator)
+
+    @test !model.infeasible
+    @test isempty(model.vars)
+    @test isempty(model.cons)
+    @test !stats.changed
+end
+
+@testset "parity_presolve! accepts shifted binary inputs without pre-normalization" begin
+    vars = Dict{PC.VarId, PC.IntVar}(
+        1 => PC.IntVar(2.0, 3.0),
+        2 => PC.IntVar(0.0, 1.0),
+    )
+    con = PC.Constraint(
+        parity_next_con_id(),
+        PC.QuadExpr(ParityQuadTerm[], ParityLinTerm[(1.0, 1), (1.0, 2)]),
+        3.0,
+        3.0,
+    )
+    model = PC.QPModel(vars, [con], parity_empty_objective(), :min)
+
+    PC.parity_presolve!(model)
+
+    @test !model.infeasible
+    @test all(PC.is_binary(var) for var in values(model.vars))
 end

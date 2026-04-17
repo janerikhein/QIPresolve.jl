@@ -291,6 +291,127 @@ end
     @test model.cons[1].rhs == 4.0
 end
 
+@testset "QPModel normalize! removes fixed vars from objective and emptied constraints" begin
+    vars = Dict{PC.VarId, PC.IntVar}(1 => PC.IntVar(2.0, 2.0))
+    con = PC.Constraint(
+        next_con_id(),
+        PC.QuadExpr(QuadTerm[], LinTerm[(1.0, 1)]),
+        2.0,
+        2.0,
+    )
+    obj = PC.QuadExpr(QuadTerm[(3.0, 1, 1)], LinTerm[(1.0, 1)])
+    model = PC.QPModel(vars, [con], obj, :min)
+
+    PC.normalize!(model)
+
+    @test !model.infeasible
+    @test isempty(model.vars)
+    @test isempty(model.cons)
+    @test isempty(collect(PC.vars(model.obj_expr)))
+    @test model.obj_expr.constant == 14.0
+end
+
+@testset "QPModel normalize! rewrites shifted binaries and preserves equivalence on binary assignments" begin
+    vars = Dict{PC.VarId, PC.IntVar}(
+        1 => PC.IntVar(2.0, 3.0),
+        2 => PC.IntVar(-1.0, 2.0),
+    )
+    con = PC.Constraint(
+        next_con_id(),
+        PC.QuadExpr(
+            QuadTerm[(1.0, 1, 1), (2.0, 1, 2)],
+            LinTerm[(3.0, 1), (-1.0, 2)];
+            constant = 0.5,
+        ),
+        1.0,
+        9.0,
+    )
+    obj = PC.QuadExpr(
+        QuadTerm[(2.0, 1, 1), (1.5, 1, 2)],
+        LinTerm[(1.0, 1), (2.0, 2)];
+        constant = -0.75,
+    )
+    model0 = PC.QPModel(vars, [con], obj, :min)
+    model = deepcopy(model0)
+
+    PC.normalize!(model)
+
+    @test model.vars[1] == PC.IntVar(0.0, 1.0)
+    @test PC.get_quad_coeff(model.cons[1].qe, 1, 1) == 0.0
+    @test PC.get_quad_coeff(model.obj_expr, 1, 1) == 0.0
+
+    con0 = model0.cons[1]
+    con1 = model.cons[1]
+    shift_lhs = con0.lhs - con1.lhs
+    shift_rhs = con0.rhs - con1.rhs
+    @test isapprox(shift_lhs, shift_rhs; atol = 1.0e-12)
+
+    for _ in 1:5
+        x = [rand(Bool) ? 1.0 : 0.0, randn()]
+        x_sub = copy(x)
+        x_sub[1] += 2.0
+
+        val_before = PC.eval_full(con0.qe, x_sub)
+        val_after = PC.eval_full(con1.qe, x)
+        @test isapprox(val_after, val_before - shift_lhs; atol = 1.0e-8)
+
+        obj_before = PC.eval_full(model0.obj_expr, x_sub)
+        obj_after = PC.eval_full(model.obj_expr, x)
+        @test isapprox(obj_after, obj_before; atol = 1.0e-8)
+    end
+end
+
+@testset "QPModel normalize! folds binary diagonal terms into the linear part" begin
+    vars = Dict{PC.VarId, PC.IntVar}(
+        1 => PC.IntVar(0.0, 1.0),
+        2 => PC.IntVar(-2.0, 2.0),
+    )
+    con = PC.Constraint(
+        next_con_id(),
+        PC.QuadExpr(
+            QuadTerm[(3.0, 1, 1), (2.0, 1, 2)],
+            LinTerm[(4.0, 1), (1.0, 2)],
+        ),
+        -1.0,
+        6.0,
+    )
+    obj = PC.QuadExpr(
+        QuadTerm[(5.0, 1, 1), (1.0, 1, 2)],
+        LinTerm[(2.0, 1), (-1.0, 2)],
+    )
+    model = PC.QPModel(vars, [con], obj, :min)
+
+    PC.normalize!(model)
+
+    @test PC.get_quad_coeff(model.cons[1].qe, 1, 1) == 0.0
+    @test PC.get_lin_coeff(model.cons[1].qe, 1) == 7.0
+    @test PC.get_quad_coeff(model.obj_expr, 1, 1) == 0.0
+    @test PC.get_lin_coeff(model.obj_expr, 1) == 7.0
+end
+
+@testset "QPModel normalize! reaches a fixpoint across gcd scaling and singleton elimination" begin
+    vars = Dict{PC.VarId, PC.IntVar}(1 => PC.IntVar(0.0, 10.0))
+    con = PC.Constraint(
+        next_con_id(),
+        PC.QuadExpr(QuadTerm[], LinTerm[(2.0, 1)]),
+        4.0,
+        4.0,
+    )
+    model = PC.QPModel(vars, [con], PC.QuadExpr(QuadTerm[], LinTerm[]), :min)
+
+    PC.normalize!(model)
+
+    @test !model.infeasible
+    @test isempty(model.vars)
+    @test isempty(model.cons)
+
+    PC.normalize!(model)
+
+    @test !model.infeasible
+    @test isempty(model.vars)
+    @test isempty(model.cons)
+end
+
 @testset "QPModel fix_vars! handles singleton linear constraints with negative coefficients" begin
     vars = Dict{PC.VarId, PC.IntVar}(1 => PC.IntVar(0.0, 1.0))
     ranged = PC.Constraint(

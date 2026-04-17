@@ -44,7 +44,7 @@ function _qp_format_expr(qe::QuadExpr)
         end
         for j in (i + 1):n
             id_j = ids[j]
-            coef = get_quad_coeff(qe, id_i, id_j) + get_quad_coeff(qe, id_j, id_i)
+            coef = get_quad_coeff(qe, id_i, id_j)
             if !_qp_iszero(coef)
                 first = _qp_append_term!(io, coef, "x$(id_i)x$(id_j)", false, first)
             end
@@ -217,4 +217,3 @@ end
 function Base.show(io::IO, ::MIME"text/plain", model::ParityModel)
     return _parity_show(io, model)
 end
-
