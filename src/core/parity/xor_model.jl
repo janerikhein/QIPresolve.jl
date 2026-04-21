@@ -1,6 +1,32 @@
+"""
+    PivotIndex
+
+Represent a pivot location in a parity row.
+
+The stored tuple is `(parity_index, conjunction_index_or_nothing)`, where
+`nothing` denotes a pure parity pivot.
+"""
 const PivotIndex = Tuple{Int, Union{Int, Nothing}}
+"""
+    PivotSlot
+
+Represent an optional stored pivot for one parity row.
+"""
 const PivotSlot = Union{Nothing, PivotIndex}
 
+"""
+    ParityModel
+
+Store the parity-system representation used during parity presolve.
+
+# Fields
+- `var_id_to_pos`: Mapping from model variable ids to parity-column positions.
+- `pos_to_var_id`: Inverse mapping from parity-column positions to model
+  variable ids.
+- `cons`: Parity constraints in row order.
+- `pivots`: Stored pivot choice for each row, or `nothing` when unpivoted.
+- `infeasible`: Whether the parity system has derived infeasibility.
+"""
 mutable struct ParityModel
     var_id_to_pos::Dict{VarId, Int}
     pos_to_var_id::Vector{Int}
@@ -9,6 +35,11 @@ mutable struct ParityModel
     infeasible::Bool
 end
 
+"""
+    ParityModel(var_to_pos, pos_to_var, cons)
+
+Construct a parity model with no pivots and `infeasible == false`.
+"""
 function ParityModel(
     var_to_pos::Dict{VarId, Int},
     pos_to_var::Vector{Int},
@@ -19,6 +50,18 @@ function ParityModel(
     return ParityModel(var_to_pos, pos_to_var, cons, pivots, false)
 end
 
+"""
+    cleanup!(model)
+
+Remove empty rows from `model` and detect empty contradictory rows.
+
+# Returns
+- The mutated `model`.
+
+# Side Effects
+- Deletes zero rows, deletes their pivot slots, and may set
+  `model.infeasible = true`.
+"""
 function cleanup!(model::ParityModel)
     for i in length(model.cons):-1:1
         con = ensure_updated!(model.cons[i])
@@ -32,13 +75,31 @@ function cleanup!(model::ParityModel)
     return model
 end
 
+"""
+    ensure_updated!(con)
+
+Refresh cached metadata for `con` when needed.
+
+# Returns
+- The updated `con`.
+"""
 function ensure_updated!(con::XorConstraint)
     con.meta.requires_update && update!(con)
     return con
 end
 
+"""
+    constraint_nnz(con)
+
+Count active parity and conjunction terms in `con`.
+"""
 constraint_nnz(con::XorConstraint) = con.meta.nnz_par + con.meta.nnz_conj
 
+"""
+    has_unpivoted_con(model)
+
+Check whether `model` still contains any nonempty unpivoted row.
+"""
 function has_unpivoted_con(model::ParityModel)
     for (i, con) in enumerate(model.cons)
         model.pivots[i] !== nothing && continue
@@ -50,6 +111,11 @@ function has_unpivoted_con(model::ParityModel)
     return false
 end
 
+"""
+    has_unpivoted_xor_con(model)
+
+Check whether `model` still contains any nonempty unpivoted pure-XOR row.
+"""
 function has_unpivoted_xor_con(model::ParityModel)
     for (i, con) in enumerate(model.cons)
         model.pivots[i] !== nothing && continue
@@ -62,6 +128,11 @@ function has_unpivoted_xor_con(model::ParityModel)
     return false
 end
 
+"""
+    is_selected_row_type(con, include_xor, include_xor_and)
+
+Check whether `con` matches the requested row-type filter.
+"""
 function is_selected_row_type(
     con::XorConstraint,
     include_xor::Bool,
@@ -71,6 +142,17 @@ function is_selected_row_type(
     return (con.meta.is_pure_xor && include_xor) || (!con.meta.is_pure_xor && include_xor_and)
 end
 
+"""
+    eliminate_pivot_from_rows!(model, piv_row_idx, piv_col_idx1, piv_col_idx2, include_xor, include_xor_and)
+
+Eliminate one stored pivot from all compatible rows of `model`.
+
+# Returns
+- The mutated `model`.
+
+# Side Effects
+- XORs the pivot row into other selected rows that contain the pivot.
+"""
 function eliminate_pivot_from_rows!(
     model::ParityModel,
     piv_row_idx::Int,
@@ -96,6 +178,14 @@ function eliminate_pivot_from_rows!(
     return model
 end
 
+"""
+    substitute_parity_pivots!(model)
+
+Eliminate stored pure-parity pivots from parity terms in other rows.
+
+# Returns
+- The mutated `model`.
+"""
 function substitute_parity_pivots!(model::ParityModel)
     for (piv_row_idx, pivot) in enumerate(model.pivots)
         pivot === nothing && continue
@@ -130,6 +220,17 @@ function substitute_parity_pivots!(model::ParityModel)
     return model
 end
 
+"""
+    substitute_pivots_in_conjunctive_terms!(model)
+
+Rewrite conjunction terms that reference stored pure-parity pivots.
+
+# Returns
+- The mutated `model`.
+
+# Side Effects
+- Mutates affected rows and revalidates any pivots invalidated by the rewrite.
+"""
 function substitute_pivots_in_conjunctive_terms!(model::ParityModel)
     changed = falses(length(model.cons))
 
@@ -167,12 +268,22 @@ function substitute_pivots_in_conjunctive_terms!(model::ParityModel)
     return model
 end
 
+"""
+    _constraint_contains_var(con, var_idx)
+
+Check whether `con` contains `var_idx` in parity or conjunction support.
+"""
 function _constraint_contains_var(con::XorConstraint, var_idx::Int)
     con.par[var_idx] && return true
     con.conj === nothing && return false
     return any(@view con.conj[:, var_idx])
 end
 
+"""
+    _fix_var_rows!(changed, model, vid, val)
+
+Apply the fixing `vid = val` to every row of `model` containing `vid`.
+"""
 function _fix_var_rows!(changed::BitVector, model::ParityModel, vid::VarId, val::Bool)
     
     vid_idx = model.var_id_to_pos[vid]
@@ -186,6 +297,11 @@ function _fix_var_rows!(changed::BitVector, model::ParityModel, vid::VarId, val:
     return model
 end
 
+"""
+    _substitute_var_rows!(changed, model, vid, substid, neg)
+
+Apply the substitution `vid <- substid ⊻ neg` to every row containing `vid`.
+"""
 function _substitute_var_rows!(
     changed::BitVector,
     model::ParityModel,
@@ -210,6 +326,11 @@ function _substitute_var_rows!(
     return model
 end
 
+"""
+    _is_valid_pivot(con, pivot)
+
+Check whether `pivot` is still active in `con`.
+"""
 function _is_valid_pivot(con::XorConstraint, pivot::PivotIndex)
     piv_col_idx1, piv_col_idx2 = pivot
     if piv_col_idx2 === nothing
@@ -219,6 +340,11 @@ function _is_valid_pivot(con::XorConstraint, pivot::PivotIndex)
     return con.conj !== nothing && con.conj[piv_col_idx1, piv_col_idx2]
 end
 
+"""
+    _revalidate_pivot!(model, row_idx)
+
+Drop the stored pivot for `row_idx` if it is no longer valid.
+"""
 function _revalidate_pivot!(model::ParityModel, row_idx::Int)
     pivot = model.pivots[row_idx]
     pivot === nothing && return model
@@ -229,6 +355,11 @@ function _revalidate_pivot!(model::ParityModel, row_idx::Int)
     return model
 end
 
+"""
+    _has_constraints_requiring_propagation(model)
+
+Check whether any row in `model` still needs propagation.
+"""
 function _has_constraints_requiring_propagation(model::ParityModel)
     return any(con.meta.requires_prop for con in model.cons)
 end
@@ -257,6 +388,18 @@ function _add_tripartite_implications!(
     return manager
 end
 
+"""
+    _insert_tripartite_rewrite!(model, manager, row_idx, action)
+
+Replace one row of `model` by the XOR rows encoded in `action`.
+
+# Returns
+- The mutated `model`.
+
+# Side Effects
+- Deletes the rewritten row, may queue fixings in `manager`, and inserts new
+  rows and pivot slots.
+"""
 function _insert_tripartite_rewrite!(
     model::ParityModel,
     manager::PropagationManager,
@@ -291,7 +434,12 @@ function _insert_tripartite_rewrite!(
 end
 
 """
-Applies fixing vid -> val to all constraints
+    fix_var!(model, vid, val)
+
+Apply the fixing `vid = val` to every row of `model`.
+
+# Returns
+- The mutated `model`.
 """
 function fix_var!(model::ParityModel, vid::VarId, val::Bool)
     changed = falses(length(model.cons))
@@ -299,13 +447,38 @@ function fix_var!(model::ParityModel, vid::VarId, val::Bool)
 end
 
 """
-Applies substitution vid -> substvid ⊻ neg to all constraints
+    substitute_var!(model, vid, substid, neg)
+
+Apply the substitution `vid <- substid ⊻ neg` to every row of `model`.
+
+# Returns
+- The mutated `model`.
 """
 function substitute_var!(model::ParityModel, vid::VarId, substid::VarId, neg::Bool)
     changed = falses(length(model.cons))
     return _substitute_var_rows!(changed, model, vid, substid, neg)
 end
 
+"""
+    propagate!(model, manager)
+
+Propagate parity implications and local rewrites until a fixpoint.
+
+Process every row marked for propagation, register implications in `manager`,
+apply queued fixings and substitutions back to `model`, and repeat until no row
+requires propagation or `model` becomes infeasible.
+
+# Arguments
+- `model`: Parity system mutated in place.
+- `manager`: Propagation manager reused across passes.
+
+# Returns
+- The mutated `model`.
+
+# Side Effects
+- Mutates `model` and `manager`.
+- May set `model.infeasible = true`.
+"""
 function propagate!(model::ParityModel, manager::PropagationManager)
     while _has_constraints_requiring_propagation(model) && !model.infeasible
         empty!(manager.seen_fixings)
@@ -368,6 +541,15 @@ function propagate!(model::ParityModel, manager::PropagationManager)
     return model
 end
 
+"""
+    get_pivot_row_idx(model, include_xor, include_xor_and)
+
+Select the nonempty unpivoted row with minimum support among the requested row
+types.
+
+# Returns
+- The chosen row index, or `nothing` when no matching row exists.
+"""
 function get_pivot_row_idx(model::ParityModel, include_xor::Bool, include_xor_and::Bool)
     piv_row_idx = 0
     min_nnz = typemax(Int)
@@ -390,7 +572,15 @@ function get_pivot_row_idx(model::ParityModel, include_xor::Bool, include_xor_an
 end
 
 """
-Always choose from conjunction terms if possible (i.e. not pure xor)
+    get_pivot_column_index(con)
+
+Select the pivot column for `con`.
+
+Choose a conjunction term when `con` is XOR-AND; otherwise choose the first
+active parity term.
+
+# Returns
+- A `PivotIndex`.
 """
 function get_pivot_column_index(con::XorConstraint)
     ensure_updated!(con)
@@ -407,6 +597,14 @@ function get_pivot_column_index(con::XorConstraint)
     return conj_idx.I
 end
 
+"""
+    gauss_jordan!(model, pivot_xor, pivot_xor_and, eliminate_xor, eliminate_xor_and)
+
+Run the configurable Gauss-Jordan elimination pass on `model`.
+
+# Returns
+- The mutated `model`.
+"""
 function gauss_jordan!(
     model::ParityModel,
     pivot_xor::Bool,
@@ -435,6 +633,16 @@ function gauss_jordan!(
     return model
 end
 
+"""
+    gauss_jordan_xor!(model)
+
+Run Gauss-Jordan elimination using only pure-XOR pivots and targets.
+"""
 gauss_jordan_xor!(model::ParityModel) = gauss_jordan!(model, true, false, true, false)
 
+"""
+    gauss_jordan_xor_and!(model)
+
+Run Gauss-Jordan elimination using only XOR-AND pivots and targets.
+"""
 gauss_jordan_xor_and!(model::ParityModel) = gauss_jordan!(model, false, true, false, true)

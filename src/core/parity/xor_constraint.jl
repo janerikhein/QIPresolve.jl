@@ -1,11 +1,39 @@
+"""
+    XorConstraintMeta
+
+Store cached metadata for an `XorConstraint`.
+
+# Fields
+- `nnz_par`: Number of active parity terms.
+- `nnz_conj`: Number of active conjunctive terms, counted once per unordered
+  pair.
+- `is_pure_xor`: Whether the constraint has no conjunctive terms.
+- `requires_update`: Whether cached counts need recomputation.
+- `requires_prop`: Whether the row still needs propagation processing.
+"""
 mutable struct XorConstraintMeta
-    nnz_par::Int #non-zeros in parity vector
-    nnz_conj::Int #non zeros in conjunction matrix
+    nnz_par::Int 
+    nnz_conj::Int
     is_pure_xor::Bool
     requires_update::Bool
     requires_prop::Bool
 end
 
+"""
+    XorConstraint
+
+Represent one parity row in XOR or XOR-AND form.
+
+The row stores parity literals in `par`, optional pairwise conjunction terms in
+`conj`, and a Boolean right-hand side. Cached structural metadata lives in
+`meta`.
+
+# Fields
+- `par`: Active parity support as a bit vector.
+- `conj`: Symmetric conjunction matrix, or `nothing` for pure XOR rows.
+- `rhs`: Right-hand side parity bit.
+- `meta`: Cached row statistics and propagation flags.
+"""
 mutable struct XorConstraint
     par::BitVector
     conj::Union{BitMatrix, Nothing}
@@ -13,45 +41,70 @@ mutable struct XorConstraint
     meta::XorConstraintMeta
 end
 
-function XorConstraint(par::BitVector, conj::BitMatrix, rhs::Bool)
-    n = length(par)
-    @assert size(conj, 1) == n
-    @assert size(conj, 2) == n
-
-    nnz_par = count(par)
+@inline function _count_conj_terms(conj::BitMatrix)
     conj_entries = count(conj)
     @assert iseven(conj_entries)
-    nnz_conj = conj_entries ÷ 2
-    is_pure_xor = nnz_conj == 0
-    normalized_conj = is_pure_xor ? nothing : conj
-    meta = XorConstraintMeta(nnz_par, nnz_conj, is_pure_xor, false, true)
-
-    return XorConstraint(par, normalized_conj, rhs, meta)
+    return conj_entries ÷ 2
 end
 
-function XorConstraint(par::BitVector, rhs::Bool)
-    meta = XorConstraintMeta(count(par), 0, true, false, true)
-    return XorConstraint(par, nothing, rhs, meta)
+@inline _xor_meta(nnz_par::Int, nnz_conj::Int) = XorConstraintMeta(nnz_par, nnz_conj, nnz_conj == 0, false, true)
+
+"""
+    XorConstraint(par, conj, rhs)
+
+Construct an XOR-AND constraint from parity and conjunction supports.
+
+# Arguments
+- `par`: Parity support bit vector.
+- `conj`: Symmetric conjunction matrix with the same dimension as `par`.
+- `rhs`: Right-hand side parity bit.
+
+# Returns
+- An `XorConstraint` with initialized metadata.
+
+# Throws
+- `AssertionError` if `conj` does not match the size of `par`.
+"""
+function XorConstraint(par::BitVector, conj::BitMatrix, rhs::Bool)
+    n = length(par)
+    @assert size(conj) == (n, n)
+    nnz_conj = _count_conj_terms(conj)
+    return XorConstraint(par, nnz_conj == 0 ? nothing : conj, rhs, _xor_meta(count(par), nnz_conj))
+end
+
+"""
+    XorConstraint(par, rhs)
+
+Construct a pure XOR constraint.
+"""
+XorConstraint(par::BitVector, rhs::Bool) = XorConstraint(par, nothing, rhs, _xor_meta(count(par), 0))
+
+@inline function _mark_dirty!(con::XorConstraint)
+    con.meta.requires_update = true
+    con.meta.requires_prop = true
+    return con
 end
 
 
+"""
+    update!(con)
+
+Refresh cached metadata for `con`.
+
+Recompute the parity and conjunction counts, update the pure-XOR flag, and drop
+the conjunction matrix when it becomes empty.
+
+# Returns
+- The mutated `con`.
+
+# Side Effects
+- Mutates `con.meta` and may set `con.conj = nothing`.
+"""
 function update!(con::XorConstraint)
     con.meta.nnz_par = count(con.par)
-    con.meta.nnz_conj = 0
-    con.meta.is_pure_xor = true
-
-    if con.conj !== nothing
-        conj_entries = count(con.conj)
-        @assert iseven(conj_entries)
-        con.meta.nnz_conj = conj_entries ÷ 2
-
-        if con.meta.nnz_conj == 0
-            con.conj = nothing
-        else
-            con.meta.is_pure_xor = false
-        end
-    end
-
+    con.meta.nnz_conj = con.conj === nothing ? 0 : _count_conj_terms(con.conj)
+    con.meta.is_pure_xor = con.meta.nnz_conj == 0
+    con.meta.is_pure_xor && (con.conj = nothing)
     con.meta.requires_update = false
 
     return con
@@ -59,18 +112,30 @@ end
 
 
 """
-    xor_con!(con::XorConstraint, other::XorConstraint) -> XorConstraint
+    xor_con!(con, other)
 
 XOR `other` into `con` in place.
+
+# Arguments
+- `con`: Destination row mutated in place.
+- `other`: Source row to XOR into `con`.
+
+# Returns
+- The mutated `con`.
+
+# Side Effects
+- Mutates the parity support, conjunction support, and right-hand side of `con`.
+
+# Notes
+- This assumes `con` and `other` are structurally compatible rows of the same
+  dimension.
 """
 function xor_con!(con::XorConstraint, other::XorConstraint)
-    con.meta.requires_update = true
-    con.meta.requires_prop = true
+    _mark_dirty!(con)
     con.par .⊻= other.par
     @assert !(con.meta.is_pure_xor && !other.meta.is_pure_xor)
-    if con.conj !== nothing && other.conj !== nothing && !con.meta.is_pure_xor && !other.meta.is_pure_xor
-        con.conj .⊻= other.conj
-    end
+    con.conj !== nothing && other.conj !== nothing && !con.meta.is_pure_xor && !other.meta.is_pure_xor &&
+        ((con.conj::BitMatrix) .⊻= (other.conj::BitMatrix))
     con.rhs ⊻= other.rhs
 
     return con
@@ -79,6 +144,11 @@ end
 
 abstract type _TripartitePropagationAction end
 
+"""
+    _TripartiteImplicationAction
+
+Store the implication-only propagation derived from a tripartite XOR-AND row.
+"""
 struct _TripartiteImplicationAction <: _TripartitePropagationAction
     x_idx::Int
     y_idx::Int
@@ -86,6 +156,11 @@ struct _TripartiteImplicationAction <: _TripartitePropagationAction
     r2::Bool
 end
 
+"""
+    _TripartiteRewriteAction
+
+Store the two XOR rows derived from a tripartite XOR-AND rewrite.
+"""
 struct _TripartiteRewriteAction <: _TripartitePropagationAction
     support1::BitVector
     rhs1::Bool
@@ -93,112 +168,159 @@ struct _TripartiteRewriteAction <: _TripartitePropagationAction
     rhs2::Bool
 end
 
+@inline function _first_nonzero_conj_column(conj::BitMatrix)
+    @inbounds for col in 1:size(conj, 2)
+        findfirst(@view conj[:, col]) !== nothing && return col
+    end
+
+    return nothing
+end
+
+@inline function _first_true_in_column(conj::BitMatrix, col::Int)
+    return findfirst(@view conj[:, col])
+end
+
+@inline function _column_matches_tripartite_pattern(
+    conj::BitMatrix,
+    col::Int,
+    ref_i::Int,
+    ref_j::Int,
+    mode::UInt8,
+)
+    @inbounds for row in 1:size(conj, 1)
+        expected = if mode == 0x00
+            false
+        elseif mode == 0x01
+            conj[row, ref_i]
+        elseif mode == 0x02
+            conj[row, ref_j]
+        else
+            conj[row, ref_i] ⊻ conj[row, ref_j]
+        end
+        conj[row, col] == expected || return false
+    end
+
+    return true
+end
+
 """
-    _tripartite_action(con::XorConstraint) -> Union{Nothing,_TripartitePropagationAction}
+    _tripartite_action(con)
 
-Inspect an up-to-date XOR-AND row and detect the tripartite reformulations
-described in `scratch_files/instructions.txt`.
+Detect a tripartite propagation pattern in `con`.
 
-Returns `nothing` when no valid tripartite action applies, an implication action
-for the `|X| = |Y| = 1` implication-only case, or a rewrite action containing
-the two derived XOR supports and right-hand sides.
+Inspect an up-to-date XOR-AND row and identify whether it matches the
+tripartite implication or rewrite patterns used by parity propagation.
+
+# Arguments
+- `con`: Up-to-date XOR-AND constraint to analyze.
+
+# Returns
+- `nothing` when no valid tripartite action applies.
+- A `_TripartiteImplicationAction` for the implication-only case.
+- A `_TripartiteRewriteAction` containing the two derived XOR rows.
+
+# Throws
+- `AssertionError` if `con` is not up to date or if multiple valid tripartite
+  interpretations are found.
 """
 function _tripartite_action(con::XorConstraint)
     @assert !con.meta.requires_update
     con.meta.nnz_conj == 0 && return nothing
+    con.conj === nothing && return nothing
 
-    conj = con.conj
-    conj === nothing && return nothing
+    i = _first_nonzero_conj_column(con.conj::BitMatrix)
+    i === nothing && return nothing
+    j = _first_true_in_column(con.conj::BitMatrix, i)
+    @assert j !== nothing
 
     n = length(con.par)
-    i = 0
-
-    @inbounds for k in 1:n
-        any(@view conj[:, k]) || continue
-        i = k
-        break
-    end
-    i == 0 && return nothing
-
-    N_i = @view conj[:, i]
-    j = findfirst(N_i)
-    @assert j !== nothing
-    N_j = @view conj[:, j]
-
-    Z = BitVector(copy(N_i))
-    Z .&= N_j
-
-    X = BitVector(copy(N_j))
-    X .&= .!Z
-
-    Y = BitVector(copy(N_i))
-    Y .&= .!Z
-
-    nx = count(X)
-    ny = count(Y)
-    nz = count(Z)
-    valid_pairs = Tuple{Bool, Bool}[]
-
-    for r1 in (false, true), r2 in (false, true)
-        expected_par = BitVector(copy(Z))
-        r2 && (expected_par .⊻= N_j)
-        r1 && (expected_par .⊻= N_i)
-
-        expected_par == con.par || continue
-        if (r1 & r2) == con.rhs && (nx > 1 || ny > 1 || nz > 0)
-            continue
-        end
-        push!(valid_pairs, (r1, r2))
-    end
-
-    isempty(valid_pairs) && return nothing
-    @assert length(valid_pairs) <= 1 "multiple valid (r1, r2) combinations found"
-
-    expected_x = BitVector(copy(Y))
-    expected_x .|= Z
-
-    expected_y = BitVector(copy(X))
-    expected_y .|= Z
-
-    expected_z = BitVector(copy(X))
-    expected_z .|= Y
+    nx = 0
+    ny = 0
+    nz = 0
+    x_idx = 0
+    y_idx = 0
 
     @inbounds for v in 1:n
-        N_v = @view conj[:, v]
+        in_i = (con.conj::BitMatrix)[v, i]
+        in_j = (con.conj::BitMatrix)[v, j]
 
-        if X[v]
-            N_v == expected_x || return nothing
-        elseif Y[v]
-            N_v == expected_y || return nothing
-        elseif Z[v]
-            N_v == expected_z || return nothing
-        elseif any(N_v)
-            return nothing
+        if in_i
+            if in_j
+                nz += 1
+                _column_matches_tripartite_pattern(con.conj::BitMatrix, v, i, j, 0x03) || return nothing
+            else
+                ny += 1
+                y_idx = v
+                _column_matches_tripartite_pattern(con.conj::BitMatrix, v, i, j, 0x02) || return nothing
+            end
+        elseif in_j
+            nx += 1
+            x_idx = v
+            _column_matches_tripartite_pattern(con.conj::BitMatrix, v, i, j, 0x01) || return nothing
+        else
+            _column_matches_tripartite_pattern(con.conj::BitMatrix, v, i, j, 0x00) || return nothing
         end
     end
 
-    r1, r2 = valid_pairs[1]
-    if (r1 & r2) == con.rhs
+    found_pair = false
+    valid_r1 = false
+    valid_r2 = false
+
+    for r1 in (false, true), r2 in (false, true)
+        matches = true
+
+        @inbounds for v in 1:n
+            expected = ((con.conj::BitMatrix)[v, i] & (con.conj::BitMatrix)[v, j]) ⊻
+                (r2 & (con.conj::BitMatrix)[v, j]) ⊻
+                (r1 & (con.conj::BitMatrix)[v, i])
+            con.par[v] == expected || begin
+                matches = false
+                break
+            end
+        end
+
+        matches || continue
+        ((r1 & r2) == con.rhs && (nx > 1 || ny > 1 || nz > 0)) && continue
+
+        @assert !found_pair "multiple valid (r1, r2) combinations found"
+        found_pair = true
+        valid_r1 = r1
+        valid_r2 = r2
+    end
+
+    found_pair || return nothing
+
+    if (valid_r1 & valid_r2) == con.rhs
         @assert nx == 1 && ny == 1 && nz == 0
-        x_idx = findfirst(X)
-        y_idx = findfirst(Y)
-        @assert x_idx !== nothing
-        @assert y_idx !== nothing
-        return _TripartiteImplicationAction(x_idx, y_idx, r1, r2)
+        @assert x_idx != 0
+        @assert y_idx != 0
+        return _TripartiteImplicationAction(x_idx, y_idx, valid_r1, valid_r2)
     end
 
     return _TripartiteRewriteAction(
-        BitVector(copy(N_j)),
-        !r1,
-        BitVector(copy(N_i)),
-        !r2,
+        copy(@view (con.conj::BitMatrix)[:, j]),
+        !valid_r1,
+        copy(@view (con.conj::BitMatrix)[:, i]),
+        !valid_r2,
     )
 end
 
 """
-    fix_var!(con::XorConstraint, var_idx::Int, val::Bool) -> XorConstraint
+    fix_var!(con, var_idx, val)
 
 Fix `x[var_idx]` to `val` in place.
+
+# Arguments
+- `con`: Constraint mutated in place.
+- `var_idx`: Variable position in row coordinates.
+- `val`: Fixed Boolean value.
+
+# Returns
+- The mutated `con`.
+
+# Side Effects
+- Removes all occurrences of `var_idx` from the row and updates the right-hand
+  side as needed.
 """
 function fix_var!(con::XorConstraint, var_idx::Int, val::Bool)
     @assert 1 <= var_idx <= length(con.par)
@@ -210,29 +332,89 @@ function fix_var!(con::XorConstraint, var_idx::Int, val::Bool)
 
     if con.conj !== nothing
         conj = con.conj::BitMatrix
-        conj_var = BitVector(copy(@view conj[:, var_idx]))
-
-        if val
-            con.par .⊻= conj_var
+        @inbounds for k in eachindex(con.par)
+            conj[k, var_idx] || continue
+            val && (con.par[k] ⊻= true)
+            conj[k, var_idx] = false
+            conj[var_idx, k] = false
         end
-
-        conj[:, var_idx] .= false
-        conj[var_idx, :] .= false
     end
 
-    con.meta.requires_update = true
-    con.meta.requires_prop = true
-
-    return con
+    return _mark_dirty!(con)
 end
 
 """
-Performs substitution x[var_idx] <- x[subst_idx] ⊻ neg.
+    _rewrite_conjunctive_neighbors!(con, conj, var_idx, subst_mask, neg)
 
-Assumes:
-- con.conj is symmetric
-- con.conj[i, i] == false on entry
-- var_idx != subst_idx
+Rewrite conjunction terms incident to `var_idx`.
+
+Apply the conjunctive part of a substitution
+`x[var_idx] <- (⊻_{j : subst_mask[j]} x[j]) ⊻ neg` while preserving symmetry of
+`conj`.
+
+# Returns
+- `true` if any conjunctive neighbor was rewritten.
+- `false` if `var_idx` had no conjunctive neighbors.
+
+# Side Effects
+- Mutates `con.par` and `conj`.
+"""
+function _rewrite_conjunctive_neighbors!(
+    con::XorConstraint,
+    conj::BitMatrix,
+    var_idx::Int,
+    subst_mask::BitVector,
+    neg::Bool,
+)
+    changed = false
+
+    @inbounds for k in eachindex(con.par)
+        conj[k, var_idx] || continue
+        changed = true
+        neg && (con.par[k] ⊻= true)
+
+        for j in eachindex(subst_mask)
+            subst_mask[j] || continue
+            if j == k
+                con.par[j] ⊻= true
+            else
+                conj[j, k] ⊻= true
+                conj[k, j] = conj[j, k]
+            end
+        end
+
+        conj[k, var_idx] = false
+        conj[var_idx, k] = false
+    end
+
+    return changed
+end
+
+"""
+    substitute_var!(con, var_idx, subst_idx, neg)
+
+Substitute one row variable by another row variable, optionally negated.
+
+Apply `x[var_idx] <- x[subst_idx] ⊻ neg` to both parity and conjunction terms of
+`con`.
+
+# Arguments
+- `con`: Constraint mutated in place.
+- `var_idx`: Variable position to eliminate.
+- `subst_idx`: Replacement variable position.
+- `neg`: Whether to negate the replacement literal.
+
+# Returns
+- The mutated `con`.
+
+# Side Effects
+- Mutates `con.par`, `con.conj`, and `con.rhs`.
+
+# Notes
+- Assumes `con.conj` is symmetric with a false diagonal when present.
+
+# Throws
+- `AssertionError` if the supplied indices are invalid or identical.
 """
 function substitute_var!(con::XorConstraint, var_idx::Int, subst_idx::Int, neg::Bool)
     @assert 1 <= var_idx <= length(con.par)
@@ -249,30 +431,20 @@ function substitute_var!(con::XorConstraint, var_idx::Int, subst_idx::Int, neg::
     con.rhs ⊻= (old_par & neg)
     con.par[var_idx] = false
 
-    if con.conj === nothing
-        con.meta.requires_update = true
-        con.meta.requires_prop = true
-        return con
-    end
+    con.conj === nothing && return _mark_dirty!(con)
 
     conj = con.conj::BitMatrix
-    conj_var = view(conj, :, var_idx)
-    conj_subst = view(conj, :, subst_idx)
+    @inbounds for k in eachindex(con.par)
+        conj[k, var_idx] || continue
 
-    # quadratic terms involving var_idx:
-    # (x_var ∧ x_k) -> (x_subst ∧ x_k) ⊻ (neg ∧ x_k)
-    conj_subst .⊻= conj_var
-
-    if neg
-        con.par .⊻= conj_var
+        # quadratic terms involving var_idx:
+        # (x_var ∧ x_k) -> (x_subst ∧ x_k) ⊻ (neg ∧ x_k)
+        conj[k, subst_idx] ⊻= true
+        conj[subst_idx, k] = conj[k, subst_idx]
+        neg && (con.par[k] ⊻= true)
+        conj[k, var_idx] = false
+        conj[var_idx, k] = false
     end
-
-    # restore symmetry from updated subst column
-    conj[subst_idx, :] .= conj_subst
-
-    # remove var_idx completely
-    conj_var .= false
-    conj[var_idx, :] .= false
 
     # reduce diagonal: x_j ∧ x_j = x_j
     if conj[subst_idx, subst_idx]
@@ -280,22 +452,36 @@ function substitute_var!(con::XorConstraint, var_idx::Int, subst_idx::Int, neg::
         conj[subst_idx, subst_idx] = false
     end
 
-    con.meta.requires_update = true
-    con.meta.requires_prop = true
-
-    return con
+    return _mark_dirty!(con)
 end
 
 
 """
-Performs substitution
+    substitute_var!(con, var_idx, subst_mask, neg)
+
+Substitute one row variable by an XOR of several row variables.
+
+Apply
 
     x[var_idx] <- (⊻_{j : subst_mask[j]} x[j]) ⊻ neg
 
-Assumes:
-- con.conj is symmetric
-- con.conj[i, i] == false on entry for all i
-- subst_mask[var_idx] == false
+to both parity and conjunction terms of `con`.
+
+# Arguments
+- `con`: Constraint mutated in place.
+- `var_idx`: Variable position to eliminate.
+- `subst_mask`: Boolean mask selecting replacement variables.
+- `neg`: Whether to negate the replacement XOR.
+
+# Returns
+- The mutated `con`.
+
+# Side Effects
+- Mutates `con.par`, `con.conj`, and `con.rhs`.
+
+# Notes
+- Assumes `con.conj` is symmetric with a false diagonal when present.
+- `subst_mask[var_idx]` must be `false`.
 """
 function substitute_var!(
     con::XorConstraint,
@@ -317,55 +503,40 @@ function substitute_var!(
     end
     con.par[var_idx] = false
 
-    if con.conj === nothing
-        con.meta.requires_update = true
-        con.meta.requires_prop = true
-        return con
-    end
+    con.conj === nothing && return _mark_dirty!(con)
 
     conj = con.conj::BitMatrix
-    subst_indices = findall(subst_mask)
-    neighbor_indices = findall(@view conj[:, var_idx])
-
-    # quadratic terms:
-    # (x_i ∧ x_k) -> ((xor-sum over subst vars) ∧ x_k) ⊻ (neg ∧ x_k)
-    for k in neighbor_indices
-        if neg
-            con.par[k] ⊻= true
-        end
-
-        for j in subst_indices
-            if j == k
-                con.par[j] ⊻= true
-            else
-                conj[j, k] ⊻= true
-                conj[k, j] = conj[j, k]
-            end
-        end
-    end
-
-    # remove var_idx completely
-    conj[:, var_idx] .= false
-    conj[var_idx, :] .= false
-
-    con.meta.requires_update = true
-    con.meta.requires_prop = true
-
-    return con
+    _rewrite_conjunctive_neighbors!(con, conj, var_idx, subst_mask, neg)
+    return _mark_dirty!(con)
 end
 
 """
-Performs substitution inside conjunction terms only
+    substitute_var_in_conjunctive_terms!(con, var_idx, subst_mask, neg)
+
+Rewrite only the conjunction terms incident to `var_idx`.
+
+Apply
 
     x[var_idx] <- (⊻_{j : subst_mask[j]} x[j]) ⊻ neg
 
-This only rewrites terms of the form `x[var_idx] ∧ x[k]` and leaves any linear
-occurrence of `x[var_idx]` untouched.
+inside conjunction terms of `con`, while leaving any linear occurrence of
+`x[var_idx]` untouched.
 
-Assumes:
-- con.conj is symmetric
-- con.conj[i, i] == false on entry for all i
-- subst_mask[var_idx] == false
+# Arguments
+- `con`: Constraint mutated in place.
+- `var_idx`: Variable position to rewrite in conjunction terms.
+- `subst_mask`: Boolean mask selecting replacement variables.
+- `neg`: Whether to negate the replacement XOR.
+
+# Returns
+- The mutated `con`.
+
+# Side Effects
+- Mutates `con.conj` and possibly `con.par`.
+
+# Notes
+- Assumes `con.conj` is symmetric with a false diagonal when present.
+- `subst_mask[var_idx]` must be `false`.
 """
 function substitute_var_in_conjunctive_terms!(
     con::XorConstraint,
@@ -380,44 +551,22 @@ function substitute_var_in_conjunctive_terms!(
     con.conj === nothing && return con
 
     conj = con.conj::BitMatrix
-    subst_indices = findall(subst_mask)
-    neighbor_indices = findall(@view conj[:, var_idx])
-    isempty(neighbor_indices) && return con
-
-    # quadratic terms:
-    # (x_i ∧ x_k) -> ((xor-sum over subst vars) ∧ x_k) ⊻ (neg ∧ x_k)
-    for k in neighbor_indices
-        if neg
-            con.par[k] ⊻= true
-        end
-
-        for j in subst_indices
-            if j == k
-                con.par[j] ⊻= true
-            else
-                conj[j, k] ⊻= true
-                conj[k, j] = conj[j, k]
-            end
-        end
-    end
-
-    # remove var_idx from conjunction terms
-    conj[:, var_idx] .= false
-    conj[var_idx, :] .= false
-
-    con.meta.requires_update = true
-    con.meta.requires_prop = true
-
-    return con
+    _rewrite_conjunctive_neighbors!(con, conj, var_idx, subst_mask, neg) || return con
+    return _mark_dirty!(con)
 end
 
 """
     XorConstraintBuilder
 
-Builder for XOR/XOR-AND constraints in variable-id space.
+Build an XOR or XOR-AND constraint in variable-id space.
 
 Terms are toggled modulo 2 in the internal dictionaries and materialized into
-bit-vectors/matrices by [`build`](@ref).
+bit-vectors and matrices by [`build`](@ref).
+
+# Fields
+- `par`: Active parity terms keyed by variable id.
+- `conj`: Active conjunction terms keyed by ordered variable-id pairs.
+- `rhs`: Right-hand side parity bit.
 """
 mutable struct XorConstraintBuilder
     par::Dict{VarId, Bool}
@@ -425,46 +574,53 @@ mutable struct XorConstraintBuilder
     rhs::Bool
 end
 
-"""
-    XorConstraintBuilder()
-
-Create an empty constraint builder with `rhs == false`.
-"""
 XorConstraintBuilder() = XorConstraintBuilder(Dict{VarId, Bool}(), Dict{Tuple{VarId, VarId}, Bool}(), false)
 
 """
-    add_par!(builder::XorConstraintBuilder, var_id::VarId) -> Bool
+    add_par!(builder, var_id)
 
 Toggle linear term `var_id` in `builder`.
+
+# Returns
+- The new active/inactive state stored for `var_id`.
 """
-function add_par!(builder::XorConstraintBuilder, var_id::VarId)
-    return builder.par[var_id] = !get(builder.par, var_id, false)
-end
+add_par!(builder::XorConstraintBuilder, var_id::VarId) = (builder.par[var_id] = !get(builder.par, var_id, false))
 
 """
-    add_conj!(builder::XorConstraintBuilder, var_id_1::VarId, var_id_2::VarId) -> Bool
+    add_conj!(builder, var_id_1, var_id_2)
 
 Toggle conjunctive term `(var_id_1, var_id_2)` in `builder`.
+
+# Returns
+- The new active/inactive state stored for the ordered variable pair.
 """
 function add_conj!(builder::XorConstraintBuilder, var_id_1::VarId, var_id_2::VarId)
-    if var_id_1 > var_id_2
-        var_id_1, var_id_2 = var_id_2, var_id_1
-    end
+    var_id_1 > var_id_2 && ((var_id_1, var_id_2) = (var_id_2, var_id_1))
     return builder.conj[(var_id_1, var_id_2)] = !get(builder.conj, (var_id_1, var_id_2), false)
 end
 
 """
-    negate!(builder::XorConstraintBuilder) -> Bool
+    negate!(builder)
 
 Toggle the builder right-hand side bit.
+
+# Returns
+- The new right-hand side bit.
 """
 negate!(builder::XorConstraintBuilder) = (builder.rhs ⊻= true)
 
 """
-    build(builder::XorConstraintBuilder, nvars::Int, pos_to_var, var_to_pos) -> XorConstraint
+    build(builder, nvars, var_to_pos)
 
-Materialize `builder` into an `XorConstraint` using the provided variable
-position mappings.
+Materialize `builder` into an `XorConstraint` using `var_to_pos`.
+
+# Arguments
+- `builder`: Constraint builder in variable-id space.
+- `nvars`: Number of parity variables in the target row space.
+- `var_to_pos`: Mapping from variable ids to row positions.
+
+# Returns
+- An `XorConstraint` over row positions `1:nvars`.
 """
 function build(builder::XorConstraintBuilder, nvars::Int, var_to_pos::Dict{VarId, Int})
     par = falses(nvars)
@@ -488,13 +644,4 @@ function build(builder::XorConstraintBuilder, nvars::Int, var_to_pos::Dict{VarId
     end
 
     return con
-end
-
-function build(
-    builder::XorConstraintBuilder,
-    nvars::Int,
-    pos_to_var,
-    var_to_pos::Dict{VarId, Int},
-)
-    return build(builder, nvars, var_to_pos)
 end

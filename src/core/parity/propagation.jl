@@ -1,11 +1,24 @@
 using DataStructures: Deque
 using Graphs
 
-
 const VarId = Int
 
+"""
+    LitLabel
+
+Represent the propagated truth status of one SCC literal node.
+"""
 @enum LitLabel TRUE FALSE UNDEF
 
+"""
+    VarLit
+
+Represent one Boolean literal associated with a model variable.
+
+# Fields
+- `vid`: Variable id.
+- `neg`: Whether the literal is negated.
+"""
 struct VarLit
     vid::VarId
     neg::Bool
@@ -19,6 +32,14 @@ keeping the same variable id.
 """
 negated(lit::VarLit) = VarLit(lit.vid, !lit.neg)
 
+"""
+    PropagationManager
+
+Store the union-find and implication-graph state used for parity propagation.
+
+This structure tracks literal representatives, SCC labels, pending fixings and
+substitutions, and the condensed implication graph across propagation passes.
+"""
 mutable struct PropagationManager
     nvars::Int
     nreps::Int
@@ -45,6 +66,11 @@ mutable struct PropagationManager
     graph::DiGraph 
 end
 
+"""
+    ParityPropagator
+
+Alias `PropagationManager` for parity-specific call sites.
+"""
 const ParityPropagator = PropagationManager
 
 """
@@ -531,10 +557,20 @@ function fixed_value(manager::PropagationManager, vid::VarId)
     return nothing
 end
 
+"""
+    _component_size(manager, rep_pos)
+
+Count how many literal positions currently belong to representative `rep_pos`.
+"""
 function _component_size(manager::PropagationManager, rep_pos::Int)
     return count(pos -> repr!(manager, pos) == rep_pos, eachindex(manager.pos_to_lit))
 end
 
+"""
+    _rep_component_positions(manager, rep_pos)
+
+Collect the literal positions currently represented by `rep_pos`.
+"""
 function _rep_component_positions(manager::PropagationManager, rep_pos::Int)
     return [pos for pos in eachindex(manager.pos_to_lit) if repr!(manager, pos) == rep_pos]
 end
@@ -710,7 +746,92 @@ function update!(manager::PropagationManager)
     return manager
 end
 
+@inline _lit_for_value(vid::VarId, val::Bool) = VarLit(vid, !val)
 
+"""
+    _triangle_column_matches(conj, col, neighbor1, neighbor2)
+
+Check whether column `col` has exactly the two expected triangle neighbors.
+"""
+function _triangle_column_matches(
+    conj::BitMatrix,
+    col::Int,
+    neighbor1::Int,
+    neighbor2::Int,
+)
+    count = 0
+    n = size(conj, 1)
+
+    @inbounds for row in 1:n
+        conj[row, col] || continue
+        (row == neighbor1 || row == neighbor2) || return false
+        count += 1
+    end
+
+    return count == 2
+end
+
+"""
+    _triangle_vertices(conj)
+
+Detect whether `conj` contains exactly one triangle support and return its
+vertex positions.
+
+# Returns
+- A tuple `(i, j, k)` when `conj` contains a triangle on exactly three
+  vertices.
+- `nothing` otherwise.
+"""
+function _triangle_vertices(conj::BitMatrix)
+    n = size(conj, 1)
+
+    @inbounds for col in 1:n
+        neighbor1 = findfirst(@view conj[:, col])
+        neighbor1 === nothing && continue
+
+        count = 0
+        neighbor2 = 0
+
+        for row in 1:n
+            conj[row, col] || continue
+            count += 1
+
+            if count == 1
+                row == neighbor1 || return nothing
+            elseif count == 2
+                neighbor2 = row
+            else
+                return nothing
+            end
+        end
+
+        count == 2 || return nothing
+        _triangle_column_matches(conj, col, neighbor1, neighbor2) || return nothing
+        _triangle_column_matches(conj, neighbor1, col, neighbor2) || return nothing
+        _triangle_column_matches(conj, neighbor2, col, neighbor1) || return nothing
+        return (col, neighbor1, neighbor2)
+    end
+
+    return nothing
+end
+
+
+"""
+    register_implications!(manager, con, idx_to_vid)
+
+Register the direct logical consequences of `con` in `manager`.
+
+Handle supported small pure-XOR, pure-conjunction, and triangle-shaped rows and
+mark `con` as no longer requiring propagation afterward.
+
+# Arguments
+- `manager`: Propagation manager mutated in place.
+- `con`: Constraint whose implications should be registered.
+- `idx_to_vid`: Mapping from row indices to model variable ids.
+
+# Returns
+- `nothing`.
+"""
 function register_implications!(manager::PropagationManager, con::XorConstraint, idx_to_vid)
     con.meta.requires_prop || return nothing
     con.meta.requires_update && update!(con)
@@ -737,10 +858,22 @@ function register_implications!(manager::PropagationManager, con::XorConstraint,
 
     # Case 2: Pure conjunction
     if con.meta.nnz_conj > 0 && con.meta.nnz_par == 0
+        conj = con.conj::BitMatrix
 
         # Case 2.1: singleton conjunction term
         if con.meta.nnz_conj == 1
-            (vid1_idx, vid2_idx) = findfirst(con.conj).I
+            vid1_idx = vid2_idx = 0
+            @inbounds for i in 1:(size(conj, 1) - 1)
+                for j in (i + 1):size(conj, 1)
+                    conj[i, j] || continue
+                    vid1_idx = i
+                    vid2_idx = j
+                    break
+                end
+                vid1_idx != 0 && break
+            end
+
+            @assert vid1_idx != 0
             vid1, vid2 = idx_to_vid[vid1_idx], idx_to_vid[vid2_idx]
             if con.rhs 
                 fix_var!(manager, vid1, true)
@@ -749,6 +882,74 @@ function register_implications!(manager::PropagationManager, con::XorConstraint,
                 lit1 = VarLit(vid1, false)
                 lit2 = VarLit(vid2, true)
                 add_implication!(manager, lit1, lit2)
+            end
+        end
+
+        # Case 2.2: two conjunction terms
+        if con.meta.nnz_conj == 2 && con.rhs
+            i = j = k = l = 0
+            found = 0
+
+            @inbounds for row in 1:(size(conj, 1) - 1)
+                for col in (row + 1):size(conj, 1)
+                    conj[row, col] || continue
+                    found += 1
+
+                    if found == 1
+                        i, j = row, col
+                    else
+                        @assert found == 2
+                        k, l = row, col
+                    end
+                end
+            end
+
+            @assert found == 2
+            vids1 = (idx_to_vid[i], idx_to_vid[j])
+            vids2 = (idx_to_vid[k], idx_to_vid[l])
+
+            for antecedent_vid in vids1, consequent_vid in vids2
+                add_implication!(
+                    manager,
+                    _lit_for_value(antecedent_vid, false),
+                    _lit_for_value(consequent_vid, true),
+                )
+            end
+
+            for antecedent_vid in vids2, consequent_vid in vids1
+                add_implication!(
+                    manager,
+                    _lit_for_value(antecedent_vid, false),
+                    _lit_for_value(consequent_vid, true),
+                )
+            end
+        end
+
+        # Case 2.3: triangle-shaped conjunction terms
+        if con.meta.nnz_conj == 3
+            triangle = _triangle_vertices(conj)
+
+            if triangle !== nothing
+                antecedent_val = !con.rhs
+                consequent_val = con.rhs
+                vids = (
+                    idx_to_vid[triangle[1]],
+                    idx_to_vid[triangle[2]],
+                    idx_to_vid[triangle[3]],
+                )
+
+                for i in eachindex(vids)
+                    antecedent_vid = vids[i]
+                    for j in eachindex(vids)
+                        i == j && continue
+                        consequent_vid = vids[j]
+                        add_implication!(
+                            manager,
+                            _lit_for_value(antecedent_vid, antecedent_val),
+                            _lit_for_value(consequent_vid, consequent_val),
+                        )
+                    end
+                end
             end
         end
     end

@@ -13,6 +13,7 @@ function assert_same_expr(a::PC.QuadExpr, b::PC.QuadExpr; atol::Float64 = 1.0e-1
     @test a.pos_to_var[1:a.nvars] == b.pos_to_var[1:b.nvars]
     @test a.var_to_pos == b.var_to_pos
     @test a.perm == b.perm
+    @test a.is_integer == b.is_integer
     @test isapprox(a.constant, b.constant; atol = atol)
     @test isapprox(a.lin_buf, b.lin_buf; atol = atol)
     return @test isapprox(a.quad_buf, b.quad_buf; atol = atol)
@@ -48,6 +49,24 @@ end
     @test_throws AssertionError PC.QuadExpr(QuadTerm[], LinTerm[]; buf_size_factor = 0.5)
 end
 
+@testset "QuadExpr isinteger tracks active coefficients only" begin
+    integral_with_constant = PC.QuadExpr(
+        QuadTerm[(2.0, 1, 1), (4.0, 1, 2)],
+        LinTerm[(2.0, 1), (-3.0, 2)];
+        constant = 0.5,
+    )
+    @test isinteger(integral_with_constant)
+
+    odd_bilinear = PC.QuadExpr(QuadTerm[(3.0, 1, 2)], LinTerm[])
+    @test !isinteger(odd_bilinear)
+
+    PC.remove_var!(odd_bilinear, 2; clear_buf = false)
+    @test isinteger(odd_bilinear)
+
+    PC.add_var!(odd_bilinear, 3; clear_buf = false)
+    @test !isinteger(odd_bilinear)
+end
+
 @testset "QuadExpr coefficient updates" begin
     qe = empty_qe()
 
@@ -74,13 +93,13 @@ end
     @test PC.get_quad_coeff(qe, 11, 10) == 4.0
     @test PC.get_quad_coeff(qe, 10, 12) == 0.0
 
-    @test PC.add_quad_coeff!(qe, 10, 11, 1.5; sym = true) == true
+    @test PC.add_quad_coeff!(qe, 10, 11, 1.5) == true
     @test PC.quad(qe)[p10, p11] == 5.5
     @test PC.quad(qe)[p11, p10] == 0.0
     @test PC.get_quad_coeff(qe, 10, 11) == 5.5
     @test PC.get_quad_coeff(qe, 11, 10) == 5.5
 
-    @test PC.set_quad_coeff!(qe, 10, 11, 7.0; sym = true) == true
+    @test PC.set_quad_coeff!(qe, 10, 11, 7.0) == true
     @test PC.quad(qe)[p10, p11] == 7.0
     @test PC.quad(qe)[p11, p10] == 0.0
 
@@ -140,7 +159,7 @@ end
     PC.add_var!(qe_missing, 1)
     PC.add_var!(qe_missing, 2)
     PC.set_lin_coeff!(qe_missing, 1, 2.0)
-    PC.set_quad_coeff!(qe_missing, 1, 2, 3.0; sym = true)
+    PC.set_quad_coeff!(qe_missing, 1, 2, 3.0)
 
     qe_snapshot = deepcopy(qe_missing)
     @test PC.remove_var!(qe_missing, 99) == false

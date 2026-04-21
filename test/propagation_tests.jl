@@ -30,6 +30,15 @@ function drain_substitutions!(manager)
     end
 end
 
+function propagation_edge_matrix(n::Int, edges::Vector{Tuple{Int, Int}})
+    mat = falses(n, n)
+    for (i, j) in edges
+        mat[i, j] = true
+        mat[j, i] = true
+    end
+    return mat
+end
+
 @testset "VarLit helpers and constructor" begin
     lit = PC.VarLit(7, false)
     @test PC.negated(lit) == PC.VarLit(7, true)
@@ -370,6 +379,119 @@ end
     subs = Set(drain_substitutions!(manager))
     @test (11, 1, true) in subs
     @test !((11, 1, false) in subs)
+end
+
+@testset "register_implications! adds two-term pure-conjunction cross implications" begin
+    pos_to_var = [11, 12, 21, 22]
+    con = PC.XorConstraint(
+        falses(4),
+        propagation_edge_matrix(4, [(1, 2), (3, 4)]),
+        true,
+    )
+    manager = PC.PropagationManager(pos_to_var)
+
+    PC.register_implications!(manager, con, pos_to_var)
+
+    PC.fix_var!(manager, 11, false)
+    @test PC.pop_fixing!(manager) == (11, false)
+    @test PC.update!(manager) === manager
+    @test PC.fixed_value(manager, 21) == true
+    @test PC.fixed_value(manager, 22) == true
+    @test Set(drain_fixings!(manager)) == Set([(21, true), (22, true)])
+
+    reverse_manager = PC.PropagationManager(pos_to_var)
+    reverse_con = PC.XorConstraint(
+        falses(4),
+        propagation_edge_matrix(4, [(1, 2), (3, 4)]),
+        true,
+    )
+
+    PC.register_implications!(reverse_manager, reverse_con, pos_to_var)
+
+    PC.fix_var!(reverse_manager, 22, false)
+    @test PC.pop_fixing!(reverse_manager) == (22, false)
+    @test PC.update!(reverse_manager) === reverse_manager
+    @test PC.fixed_value(reverse_manager, 11) == true
+    @test PC.fixed_value(reverse_manager, 12) == true
+    @test Set(drain_fixings!(reverse_manager)) == Set([(11, true), (12, true)])
+end
+
+@testset "register_implications! adds triangle implications for rhs=true" begin
+    pos_to_var = [1, 2, 3]
+    con = PC.XorConstraint(
+        falses(3),
+        propagation_edge_matrix(3, [(1, 2), (2, 3), (1, 3)]),
+        true,
+    )
+    manager = PC.PropagationManager(pos_to_var)
+
+    PC.register_implications!(manager, con, pos_to_var)
+
+    PC.fix_var!(manager, 1, false)
+    @test PC.pop_fixing!(manager) == (1, false)
+    @test PC.update!(manager) === manager
+    @test PC.fixed_value(manager, 2) == true
+    @test PC.fixed_value(manager, 3) == true
+    @test Set(drain_fixings!(manager)) == Set([(2, true), (3, true)])
+end
+
+@testset "register_implications! adds triangle implications for rhs=false" begin
+    pos_to_var = [1, 2, 3]
+    con = PC.XorConstraint(
+        falses(3),
+        propagation_edge_matrix(3, [(1, 2), (2, 3), (1, 3)]),
+        false,
+    )
+    manager = PC.PropagationManager(pos_to_var)
+
+    PC.register_implications!(manager, con, pos_to_var)
+
+    PC.fix_var!(manager, 1, true)
+    @test PC.pop_fixing!(manager) == (1, true)
+    @test PC.update!(manager) === manager
+    @test PC.fixed_value(manager, 2) == false
+    @test PC.fixed_value(manager, 3) == false
+    @test Set(drain_fixings!(manager)) == Set([(2, false), (3, false)])
+end
+
+@testset "register_implications! skips non-triangle nnz_conj==3 rows" begin
+    pos_to_var = [1, 2, 3, 4]
+    con = PC.XorConstraint(
+        falses(4),
+        propagation_edge_matrix(4, [(1, 2), (2, 3), (3, 4)]),
+        true,
+    )
+    manager = PC.PropagationManager(pos_to_var)
+
+    PC.register_implications!(manager, con, pos_to_var)
+
+    PC.fix_var!(manager, 1, false)
+    @test PC.pop_fixing!(manager) == (1, false)
+    @test PC.update!(manager) === manager
+    @test PC.fixed_value(manager, 2) === nothing
+    @test PC.fixed_value(manager, 3) === nothing
+    @test PC.fixed_value(manager, 4) === nothing
+    @test isempty(drain_fixings!(manager))
+end
+
+@testset "register_implications! rejects nnz_conj==3 rows whose candidate triangle columns do not match" begin
+    pos_to_var = [1, 2, 3, 4]
+    con = PC.XorConstraint(
+        falses(4),
+        propagation_edge_matrix(4, [(1, 2), (1, 3), (2, 4)]),
+        true,
+    )
+    manager = PC.PropagationManager(pos_to_var)
+
+    PC.register_implications!(manager, con, pos_to_var)
+
+    PC.fix_var!(manager, 1, false)
+    @test PC.pop_fixing!(manager) == (1, false)
+    @test PC.update!(manager) === manager
+    @test PC.fixed_value(manager, 2) === nothing
+    @test PC.fixed_value(manager, 3) === nothing
+    @test PC.fixed_value(manager, 4) === nothing
+    @test isempty(drain_fixings!(manager))
 end
 
 @testset "update_sccs! condenses graph and carries labels" begin

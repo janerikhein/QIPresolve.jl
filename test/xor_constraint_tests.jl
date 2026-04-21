@@ -355,7 +355,7 @@ end
 
 @testset "XorConstraintBuilder toggling and build" begin
     n = 3
-    pos_to_var, var_to_pos = identity_maps(n)
+    _, var_to_pos = identity_maps(n)
 
     builder = PC.XorConstraintBuilder()
     @test PC.add_par!(builder, 1)
@@ -371,7 +371,7 @@ end
     @test PC.negate!(builder)
     @test !PC.negate!(builder)
 
-    con = PC.build(builder, n, pos_to_var, var_to_pos)
+    con = PC.build(builder, n, var_to_pos)
     @test !con.meta.is_pure_xor
     @test con.par == BitVector([0, 1, 0])
     @test con.conj == symmetric_bitmatrix(n, [(2, 3)])
@@ -379,7 +379,7 @@ end
 
     pure_builder = PC.XorConstraintBuilder()
     PC.add_par!(pure_builder, 3)
-    pure = PC.build(pure_builder, n, pos_to_var, var_to_pos)
+    pure = PC.build(pure_builder, n, var_to_pos)
     @test pure.meta.is_pure_xor
     @test pure.par == BitVector([0, 0, 1])
     @test pure.conj === nothing

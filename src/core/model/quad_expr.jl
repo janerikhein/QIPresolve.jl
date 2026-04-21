@@ -1,3 +1,8 @@
+"""
+    VarId
+
+Represent variable identifiers used by `QuadExpr`.
+"""
 const VarId = Int
 
 """
@@ -86,6 +91,46 @@ mutable struct QuadExpr
     quad_buf::Matrix{Float64}
     lin_buf::Vector{Float64}
     constant::Float64
+    is_integer::Bool
+end
+
+"""
+    _compute_is_integer(qe)
+
+Check whether `qe` satisfies the integral coefficient invariants tracked by
+`QuadExpr`.
+
+# Returns
+- `true` when all linear and diagonal coefficients are integers and all
+  off-diagonal coefficients are even integers.
+- `false` otherwise.
+"""
+function _compute_is_integer(qe::QuadExpr)
+    @inbounds for posi in 1:qe.nvars
+        pi = qe.perm[posi]
+        isinteger(qe.lin_buf[pi]) || return false
+        isinteger(qe.quad_buf[pi, pi]) || return false
+
+        for posj in (posi + 1):qe.nvars
+            pj = qe.perm[posj]
+            coeff = if pi <= pj
+                qe.quad_buf[pi, pj]
+            else
+                qe.quad_buf[pj, pi]
+            end
+            isinteger(coeff) || return false
+            iseven(trunc(Int, coeff)) || return false
+        end
+    end
+
+    return true
+end
+
+@inline Base.isinteger(qe::QuadExpr) = qe.is_integer
+
+@inline function _refresh_is_integer!(qe::QuadExpr)
+    qe.is_integer = _compute_is_integer(qe)
+    return qe
 end
 
 """
@@ -154,6 +199,7 @@ function QuadExpr(
         quad_buf,
         lin_buf,
         constant,
+        false,
     )
 
     # insert quadratic terms
@@ -176,7 +222,7 @@ function QuadExpr(
         @inbounds qe.lin_buf[i] += coef
     end
 
-    return qe
+    return _refresh_is_integer!(qe)
 end
 
 """
@@ -209,12 +255,19 @@ end
 
 
 """
-    checks if expression is empty, assumes expr is normalized
+    is_empty(qe)
+
+Check whether `qe` has no active variables.
 """
 is_empty(qe::QuadExpr) = (qe.nvars == 0)
 
 """
-    checks if expression is single linear term, i.e. var bound, assumes expr is normalized
+    is_singleton(qe)
+
+Check whether `qe` is a singleton linear expression.
+
+This assumes `qe` has already been normalized so zero-coefficient variables have
+been removed.
 """
 is_singleton(qe::QuadExpr) = (qe.nvars == 1 && qe.quad_buf[qe.perm[1], qe.perm[1]] == 0)
 
@@ -325,6 +378,7 @@ function set_lin_coeff!(qe::QuadExpr, id::VarId, val::Float64)::Bool
     pos == 0 && return false
     i = qe.perm[pos]  # physical
     @inbounds qe.lin_buf[i] = val
+    _refresh_is_integer!(qe)
     return true
 end
 
@@ -341,6 +395,7 @@ function add_lin_coeff!(qe::QuadExpr, id::VarId, delta::Float64)::Bool
     pos == 0 && return false
     i = qe.perm[pos]  # physical
     @inbounds qe.lin_buf[i] += delta
+    _refresh_is_integer!(qe)
     return true
 end
 
@@ -355,9 +410,8 @@ Returns `true` if both variables exist in the expression, otherwise returns `fal
 
 Note: Coefficients are stored canonically in the upper triangle of `quad_buf`
 (by physical buffer index). Lower-triangular entries are forced to zero.
-The `sym` keyword is accepted for compatibility but has no effect.
 """
-function set_quad_coeff!(qe::QuadExpr, id1::VarId, id2::VarId, val::Float64; sym::Bool = false)
+function set_quad_coeff!(qe::QuadExpr, id1::VarId, id2::VarId, val::Float64)
     pos1 = var_pos(qe, id1)
     pos1 == 0 && return false
     pos2 = var_pos(qe, id2)
@@ -373,6 +427,7 @@ function set_quad_coeff!(qe::QuadExpr, id1::VarId, id2::VarId, val::Float64; sym
         @inbounds qe.quad_buf[j, i] = val
         @inbounds qe.quad_buf[i, j] = 0.0
     end
+    _refresh_is_integer!(qe)
     return true
 end
 
@@ -386,9 +441,8 @@ Returns `true` if both variables exist in the expression, otherwise returns `fal
 
 Note: Coefficients are stored canonically in the upper triangle of `quad_buf`
 (by physical buffer index). Lower-triangular entries are forced to zero.
-The `sym` keyword is accepted for compatibility but has no effect.
 """
-function add_quad_coeff!(qe::QuadExpr, id1::VarId, id2::VarId, delta::Float64; sym::Bool = false)
+function add_quad_coeff!(qe::QuadExpr, id1::VarId, id2::VarId, delta::Float64)
     pos1 = var_pos(qe, id1)
     pos1 == 0 && return false
     pos2 = var_pos(qe, id2)
@@ -404,6 +458,7 @@ function add_quad_coeff!(qe::QuadExpr, id1::VarId, id2::VarId, delta::Float64; s
         @inbounds qe.quad_buf[j, i] += delta
         @inbounds qe.quad_buf[i, j] = 0.0
     end
+    _refresh_is_integer!(qe)
     return true
 end
 
@@ -452,9 +507,24 @@ function remove_var!(qe::QuadExpr, id::VarId; clear_buf::Bool = true)
     end
 
     qe.nvars -= 1
+    _refresh_is_integer!(qe)
     return true
 end
 
+"""
+    normalize!(qe)
+
+Remove inactive variables from `qe`.
+
+Delete variables whose linear and quadratic coefficients are all zero and refresh
+the cached integrality flag.
+
+# Returns
+- The mutated `qe`.
+
+# Side Effects
+- Mutates the variable set and cached metadata of `qe`.
+"""
 function normalize!(qe::QuadExpr)
     for pos in reverse(1:qe.nvars)
         phys_pos = qe.perm[pos]
@@ -478,7 +548,7 @@ function normalize!(qe::QuadExpr)
             remove_var!(qe, qe.pos_to_var[pos])
         end
     end
-    return
+    return _refresh_is_integer!(qe)
 end
 
 
@@ -562,6 +632,7 @@ function add_var!(qe::QuadExpr, id::VarId; clear_buf::Bool = false)
         end
     end
 
+    _refresh_is_integer!(qe)
     return newpos
 end
 
@@ -649,7 +720,7 @@ function affine_transform!(qe::QuadExpr, var_id::VarId, scale::Float64, offset::
         qe.quad_buf[pk, pk] = (scale * scale) * qkk
     end
 
-    return qe
+    return _refresh_is_integer!(qe)
 end
 
 """
@@ -807,7 +878,7 @@ function lin_transform!(
         end
     end
 
-    return qe
+    return _refresh_is_integer!(qe)
 end
 
 function scale_transform!(qe::QuadExpr, scale::Float64)
@@ -835,5 +906,5 @@ function scale_transform!(qe::QuadExpr, scale::Float64)
         qe.lin_buf[i] *= scale
     end
 
-    return qe
+    return _refresh_is_integer!(qe)
 end

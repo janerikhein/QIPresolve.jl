@@ -1,3 +1,16 @@
+"""
+    QIPresolve
+
+Load the top-level public API for QIPresolve.
+
+Assemble the presolving core, graph-embedding helpers, model I/O utilities, and
+package configuration into the main package module.
+
+# See also
+- [`PresolvingCore`](@ref)
+- [`ModelIO`](@ref)
+- [`GraphEmbedding`](@ref)
+"""
 module QIPresolve
 
 include("core/PresolvingCore.jl")

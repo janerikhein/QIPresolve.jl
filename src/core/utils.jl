@@ -4,6 +4,19 @@
     return string(val)
 end
 
+"""
+    _qp_append_term!(io, coef, body, is_constant, first)
+
+Append one formatted polynomial term to `io`.
+
+Write the signed term described by `coef` and `body`, respecting whether the
+term is constant and whether it is the first printed term in the expression.
+
+# Returns
+- `true` if no term was written and the caller should still treat the next term
+  as the first one.
+- `false` after a nonzero term is written.
+"""
 function _qp_append_term!(io::IO, coef::Float64, body::String, is_constant::Bool, first::Bool)
     _qp_iszero(coef) && return first
 
@@ -28,6 +41,11 @@ function _qp_append_term!(io::IO, coef::Float64, body::String, is_constant::Bool
     return false
 end
 
+"""
+    _qp_format_expr(qe)
+
+Format a quadratic expression as a human-readable string.
+"""
 function _qp_format_expr(qe::QuadExpr)
     ids = collect(vars(qe))
     sort!(ids)
@@ -71,6 +89,11 @@ function _qp_format_expr(qe::QuadExpr)
     return String(take!(io))
 end
 
+"""
+    _qp_format_constraint(con)
+
+Format one quadratic constraint as a human-readable string.
+"""
 function _qp_format_constraint(con::Constraint)
     expr = _qp_format_expr(con.qe)
     lhs = con.lhs
@@ -87,6 +110,14 @@ function _qp_format_constraint(con::Constraint)
     end
 end
 
+"""
+    _qp_show(io, model)
+
+Render a `QPModel` summary to `io`.
+
+# Side Effects
+- Writes formatted text to `io`.
+"""
 function _qp_show(io::IO, model::QPModel)
     println(io, "QPModel")
     println(io, "Infeasible: ", model.infeasible)
@@ -126,6 +157,11 @@ function Base.show(io::IO, con::Constraint)
     return println(io, _qp_format_constraint(con))
 end
 
+"""
+    _parity_format_constraint(con, pos_to_var_id)
+
+Format one parity constraint as a human-readable string.
+"""
 function _parity_format_constraint(con::XorConstraint, pos_to_var_id::Vector{Int})
     ensure_updated!(con)
 
@@ -149,6 +185,11 @@ function _parity_format_constraint(con::XorConstraint, pos_to_var_id::Vector{Int
     return string(lhs, " = ", con.rhs ? "1" : "0")
 end
 
+"""
+    _parity_pivot_counts(model)
+
+Count total, XOR, and XOR-AND pivots stored in `model`.
+"""
 function _parity_pivot_counts(model::ParityModel)
     total = 0
     xor = 0
@@ -168,6 +209,14 @@ function _parity_pivot_counts(model::ParityModel)
     return total, xor, xor_and
 end
 
+"""
+    _parity_show(io, model)
+
+Render a `ParityModel` summary to `io`.
+
+# Side Effects
+- Writes formatted text to `io`.
+"""
 function _parity_show(io::IO, model::ParityModel)
     xor_count = 0
     xor_and_count = 0

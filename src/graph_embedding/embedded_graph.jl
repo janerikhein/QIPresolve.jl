@@ -27,7 +27,22 @@ struct EmbeddedGraph
     dist_from_center::Vector{Float64}
 end
 
+"""
+    get_model_params(emb_graph)
 
+Extract embedding-model data from `emb_graph`.
+
+Collect the vertex set, weighted edge list, squared edge lengths, radius
+limits, center vertex, and farthest vertex needed by
+[`build_embedding_model`](@ref).
+
+# Arguments
+- `emb_graph`: Embedded graph with precomputed center and distance metadata.
+
+# Returns
+- A tuple `(V, E, d2, R, r, k)` containing the JuMP index sets and parameters
+  derived from `emb_graph`.
+"""
 function get_model_params(emb_graph::EmbeddedGraph)
     graph = emb_graph.graph
     V = 1:nv(graph)

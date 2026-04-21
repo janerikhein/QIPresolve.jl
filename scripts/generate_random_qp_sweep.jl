@@ -15,12 +15,12 @@ const LinTerm = Tuple{Float64, Int}
 const N_VARS = 200
 const N_INSTANCES = 10
 const CONSTRAINT_STEP_FACTOR = 0.1
-const MAX_CONSTRAINT_FACTOR = 3
+const MAX_CONSTRAINT_FACTOR = 10
 const VAR_LB = 0
 const VAR_UB = 1
 const SEED_BASE = 19
 const MAX_MODEL_TRIES = 100
-const DENSITY = 0.5
+const DENSITY = 0.01
 
 
 function random_quadratic_terms(
@@ -38,7 +38,7 @@ function random_quadratic_terms(
 
     for i in 1:(nvars - 1)
         for j in (i + 1):nvars
-            rand(rng) < DENSITY || continue
+            rand(rng) < 0 || continue
             coeff = rand(rng, -500:500) * 2
             coeff == 0 && continue
             push!(terms, (Float64(coeff), i, j))
