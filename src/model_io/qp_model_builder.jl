@@ -1,10 +1,28 @@
 using ..PresolvingCore: QPModel, QuadExpr, Constraint, IntVar
 
+"""
+    VarId
+
+Represent variable identifiers used by the model builders.
+"""
 const VarId = Int
 const _LinDict = Dict{VarId, Float64}
 const _QuadDict = Dict{Tuple{VarId, VarId}, Float64}
 
+"""
+    VarInfo
 
+Store declared bounds and type information for one variable.
+
+# Fields
+- `lb`: Lower bound.
+- `ub`: Upper bound.
+- `var_type`: Variable type symbol, one of `:cont`, `:int`, or `:bin`.
+
+# Throws
+- `ArgumentError` if `lb > ub`.
+- `ArgumentError` if `var_type` is unsupported.
+"""
 struct VarInfo
     lb::Float64
     ub::Float64
@@ -18,7 +36,19 @@ struct VarInfo
     end
 end
 
+"""
+    QuadExprBuilder
 
+Accumulate quadratic-expression terms before materialization.
+
+The builder stores linear and quadratic coefficients in dictionaries keyed by
+variable ids and accumulates duplicate terms additively.
+
+# Fields
+- `constant`: Constant term.
+- `lin`: Linear coefficients by variable id.
+- `quad`: Upper-triangular quadratic coefficients by variable-id pair.
+"""
 mutable struct QuadExprBuilder
     constant::Float64
     lin::_LinDict
@@ -29,17 +59,52 @@ QuadExprBuilder() = QuadExprBuilder(0, _LinDict(), _QuadDict())
 QuadExprBuilder(constant::Float64) = QuadExprBuilder(constant, _LinDict(), _QuadDict())
 
 
+"""
+    add_lin!(expr, id, val)
+
+Accumulate a linear coefficient into `expr`.
+
+# Arguments
+- `expr`: Quadratic-expression builder mutated in place.
+- `id`: Variable id receiving the coefficient.
+- `val`: Increment to add.
+
+# Returns
+- The updated coefficient stored for `id`.
+"""
 function add_lin!(expr::QuadExprBuilder, id::VarId, val::Float64)
     return expr.lin[id] = get(expr.lin, id, 0.0) + val
 end
 
 
+"""
+    add_quad!(expr, id1, id2, val)
+
+Accumulate a quadratic coefficient into `expr`.
+
+Store the coefficient under the canonical ordered key `(min(id1, id2),
+max(id1, id2))`.
+
+# Returns
+- The updated coefficient stored for the canonical variable pair.
+"""
 function add_quad!(expr::QuadExprBuilder, id1::VarId, id2::VarId, val::Float64)
     id1, id2 = id1 > id2 ? (id2, id1) : (id1, id2)
     return expr.quad[(id1, id2)] = get(expr.quad, (id1, id2), 0) + val
 end
 
 
+"""
+    build(builder::QuadExprBuilder)
+
+Materialize `builder` as a `QuadExpr`.
+
+Drop near-zero stored coefficients and construct a `PresolvingCore.QuadExpr`
+from the remaining terms.
+
+# Returns
+- A `QuadExpr` equivalent to the accumulated builder contents.
+"""
 function build(builder::QuadExprBuilder)
     quad_terms = Vector{Tuple{Float64, VarId, VarId}}()
     sizehint!(quad_terms, length(builder.quad))
@@ -59,6 +124,17 @@ function build(builder::QuadExprBuilder)
 end
 
 
+"""
+    ConstraintBuilder
+
+Store one not-yet-materialized quadratic constraint.
+
+# Fields
+- `id`: Constraint identifier.
+- `expr`: Expression builder for the left-hand side.
+- `lhs`: Lower bound.
+- `rhs`: Upper bound.
+"""
 struct ConstraintBuilder
     id::Int
     expr::QuadExprBuilder
@@ -66,12 +142,31 @@ struct ConstraintBuilder
     rhs::Float64
 end
 
+"""
+    build(builder::ConstraintBuilder)
+
+Materialize `builder` as a `Constraint`.
+
+# Returns
+- A `PresolvingCore.Constraint` built from the stored expression and bounds.
+"""
 function build(builder::ConstraintBuilder)
     quad_expr = build(builder.expr)
 
     return Constraint(builder.id, quad_expr, builder.lhs, builder.rhs)
 end
 
+"""
+    QPModelBuilder
+
+Accumulate a quadratic-program model before final construction.
+
+# Fields
+- `vars`: Declared variable metadata keyed by variable id.
+- `cons`: Constraint builders in insertion order.
+- `obj_expr`: Objective-expression builder.
+- `obj_sense`: Objective sense symbol.
+"""
 mutable struct QPModelBuilder
     vars::Dict{VarId, VarInfo}
     cons::Vector{ConstraintBuilder}
@@ -82,6 +177,20 @@ end
 
 QPModelBuilder() = QPModelBuilder(Dict{VarId, VarInfo}(), Vector{ConstraintBuilder}(), QuadExprBuilder(), :undef)
 
+"""
+    register_con!(model; quad_expr_terms=[], lin_expr_terms=[], constant=0.0, lhs=-Inf, rhs=Inf)
+
+Register a new constraint in `model`.
+
+Accumulate the supplied linear and quadratic terms, ensure their variables are
+present in `model.vars`, and append a new `ConstraintBuilder`.
+
+# Returns
+- The newly appended `ConstraintBuilder`.
+
+# Side Effects
+- Mutates `model.vars` and `model.cons`.
+"""
 function register_con!(
         model::QPModelBuilder;
         quad_expr_terms::Vector{Tuple{Float64, VarId, VarId}} = Tuple{Float64, VarId, VarId}[],
@@ -108,6 +217,20 @@ function register_con!(
     return push!(model.cons, ConstraintBuilder(con_id, quad_expr, lhs, rhs))
 end
 
+"""
+    register_var_info!(model, id; var_type=:cont, lb=-Inf, ub=Inf)
+
+Register or tighten metadata for variable `id`.
+
+When `id` already exists, the stored bounds are intersected with `[lb, ub]` and
+the variable type is restricted to the stronger existing type.
+
+# Returns
+- The updated `VarInfo` stored for `id`.
+
+# Throws
+- `ArgumentError` if the resulting bounds or type are invalid.
+"""
 function register_var_info!(
         model::QPModelBuilder, id::VarId;
         var_type::Symbol = :cont, lb::Float64 = -Inf, ub::Float64 = Inf
@@ -131,6 +254,20 @@ function register_var_info!(
     return model.vars[id] = VarInfo(lb, ub, var_type)
 end
 
+"""
+    register_obj!(model, constant, obj_sense; quad_expr_terms=[], lin_expr_terms=[])
+
+Register the objective function for `model`.
+
+Replace the current objective builder with one built from the supplied terms and
+store the requested objective sense.
+
+# Returns
+- The updated objective-sense symbol.
+
+# Side Effects
+- Mutates `model.obj_expr`, `model.obj_sense`, and may register new variables.
+"""
 function register_obj!(
         model::QPModelBuilder,
         constant::Float64,
@@ -156,6 +293,21 @@ function register_obj!(
 end
 
 
+"""
+    build_model(builder)
+
+Materialize `builder` as a `QPModel`.
+
+Convert builder-side variable metadata and constraints into
+`PresolvingCore.IntVar`, `Constraint`, and `QuadExpr` objects.
+
+# Returns
+- A `PresolvingCore.QPModel`.
+
+# Throws
+- `ErrorException` if a continuous variable is present, because the presolve
+  core currently supports only integer and binary variables.
+"""
 function build_model(builder::QPModelBuilder)
 
     vars = Dict{VarId, IntVar}()

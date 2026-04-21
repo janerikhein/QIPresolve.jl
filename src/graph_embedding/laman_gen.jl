@@ -209,7 +209,28 @@ function plot_laman_graph(
     return GraphPlot.gplot(g, xs, ys; plot_kwargs...)
 end
 
+"""
+    generate_laman_instance(n; R=10, pH2=0.5, seed=0, max_global_tries=10_000, max_tries_H1=200, max_tries_H2=300)
 
+Generate a Laman embedding instance as a JuMP model.
+
+Sample a random Laman graph with integer coordinates, convert it to an
+`EmbeddedGraph`, and build the corresponding embedding model.
+
+# Arguments
+- `n`: Number of graph vertices.
+
+# Keywords
+- `R=10`: Coordinate search radius.
+- `pH2=0.5`: Probability of using a Henneberg II step.
+- `seed=0`: Random seed.
+- `max_global_tries=10_000`: Maximum restart attempts for graph generation.
+- `max_tries_H1=200`: Maximum coordinate attempts for Henneberg I steps.
+- `max_tries_H2=300`: Maximum coordinate attempts for Henneberg II steps.
+
+# Returns
+- A tuple `(model, x, y)` from [`build_embedding_model`](@ref).
+"""
 function generate_laman_instance(
         n::Int; R::Int = 10, pH2::Float64 = 0.5, seed::Int = 0,
         max_global_tries::Int = 10_000, max_tries_H1::Int = 200, max_tries_H2::Int = 300

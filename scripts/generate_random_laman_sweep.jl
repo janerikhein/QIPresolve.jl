@@ -12,10 +12,10 @@ import QIPresolve as QIP
 PC = QIP.PresolvingCore
 GE = QIP.GraphEmbedding
 
-const N_VERTICES = 50
+const N_VERTICES = 20
 const N_INSTANCES = 5
 const EXTRA_EDGE_STEP_FACTOR = 0.1
-const R = 100
+const R = 20
 const PH2 = 0.5
 const SEED_BASE = 17
 const MAX_GLOBAL_TRIES = 10_000

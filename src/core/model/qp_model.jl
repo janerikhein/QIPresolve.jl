@@ -10,6 +10,11 @@ struct IntVar
     ub::Float64
 end
 
+"""
+    is_binary(var)
+
+Check whether `var` has binary domain `[0, 1]`.
+"""
 is_binary(var::IntVar) = (var.lb == 0.0 && var.ub == 1.0)
 
 """
@@ -35,6 +40,11 @@ mutable struct QPModel
     end
 end
 
+"""
+    nvars(model)
+
+Count active variables in `model`.
+"""
 nvars(model::QPModel) = length(model.vars)
 
 const _EMPTY_QUAD_TERMS = Tuple{Float64, VarId, VarId}[]
@@ -56,6 +66,17 @@ end
 
 @inline lin_expr(lin_terms::Vector{Tuple{Float64, VarId}}) = QuadExpr(_EMPTY_QUAD_TERMS, lin_terms)
 
+"""
+    add_constraint!(model, qe, lhs, rhs)
+
+Append a new constraint to `model`.
+
+# Returns
+- The newly created `Constraint`.
+
+# Side Effects
+- Mutates `model.cons`.
+"""
 function add_constraint!(model::QPModel, qe::QuadExpr, lhs::Float64, rhs::Float64)
     con = Constraint(next_con_id(model), qe, lhs, rhs)
     push!(model.cons, con)
@@ -131,9 +152,21 @@ end
 @inline _canonicalize_zero(x::Float64) = (x == 0.0 ? 0.0 : x)
 
 @inline function _is_shifted_binary(var::IntVar)
-    return _is_integral_value(var.lb) && _is_integral_value(var.ub) && var.ub == var.lb + 1.0 && var.lb != 0.0
+    return isinteger(var.lb) && isinteger(var.ub) && var.ub == var.lb + 1.0 && var.lb != 0.0
 end
 
+"""
+    _tighten_singleton_constraint!(model, con)
+
+Tighten variable bounds using the singleton linear constraint `con`.
+
+# Returns
+- `true` if the variable bounds changed.
+- `false` otherwise.
+
+# Side Effects
+- Mutates `model.vars` and may set `model.infeasible = true`.
+"""
 function _tighten_singleton_constraint!(model::QPModel, con::Constraint)
     var_id = vars(con.qe)[1]
     coeff = get_lin_coeff(con.qe, var_id)
@@ -162,6 +195,24 @@ function _tighten_singleton_constraint!(model::QPModel, con::Constraint)
     return true
 end
 
+"""
+    _fix_vars_and_singletons!(model, postsolver)
+
+Remove fixed variables and singleton constraints from `model`.
+
+Repeatedly fixes variables whose bounds have collapsed, propagates their values
+into constraints and the objective, and tightens domains from singleton
+constraints.
+
+# Returns
+- `true` if `model` changed.
+- `false` otherwise.
+
+# Side Effects
+- Mutates `model`.
+- May mutate `postsolver`.
+- May set `model.infeasible = true`.
+"""
 function _fix_vars_and_singletons!(model::QPModel, postsolver::Union{Nothing, ParityPostsolver})
     model.infeasible && return false
 
@@ -215,6 +266,19 @@ function _fix_vars_and_singletons!(model::QPModel, postsolver::Union{Nothing, Pa
     return changed
 end
 
+"""
+    _normalize_shifted_binaries!(model, postsolver)
+
+Shift binary variables with domains `[k, k+1]` back to `[0, 1]`.
+
+# Returns
+- `true` if any shifted binary was normalized.
+- `false` otherwise.
+
+# Side Effects
+- Mutates `model`.
+- May record reconstruction offsets in `postsolver`.
+"""
 function _normalize_shifted_binaries!(model::QPModel, postsolver::Union{Nothing, ParityPostsolver})
     model.infeasible && return false
 
@@ -240,6 +304,15 @@ function _normalize_shifted_binaries!(model::QPModel, postsolver::Union{Nothing,
     return changed
 end
 
+"""
+    _fold_binary_diagonal!(qe, binary_var_ids)
+
+Fold diagonal binary quadratic terms into linear terms in `qe`.
+
+# Returns
+- `true` if any diagonal term was folded.
+- `false` otherwise.
+"""
 function _fold_binary_diagonal!(qe::QuadExpr, binary_var_ids::AbstractVector{VarId})
     changed = false
 
@@ -255,14 +328,27 @@ function _fold_binary_diagonal!(qe::QuadExpr, binary_var_ids::AbstractVector{Var
     return changed
 end
 
+"""
+    _fold_binary_diagonal!(con, binary_var_ids)
+
+Fold diagonal binary quadratic terms into linear terms in `con`.
+"""
 function _fold_binary_diagonal!(con::Constraint, binary_var_ids::AbstractVector{VarId})
     changed = _fold_binary_diagonal!(con.qe, binary_var_ids)
     changed || return false
     normalize!(con)
-    _refresh_is_integer!(con)
     return true
 end
 
+"""
+    _fold_binary_diagonal!(model)
+
+Fold diagonal binary quadratic terms into linear terms throughout `model`.
+
+# Returns
+- `true` if any objective or constraint term changed.
+- `false` otherwise.
+"""
 function _fold_binary_diagonal!(model::QPModel)
     isempty(model.vars) && return false
 
@@ -280,6 +366,27 @@ end
 
 normalize!(model::QPModel) = normalize!(model, nothing)
 
+"""
+    normalize!(model, postsolver=nothing)
+
+Normalize `model` to a presolve-stable form.
+
+Repeatedly removes fixed variables and singleton rows, normalizes shifted
+binaries, folds binary diagonal terms, and scales integral constraints by gcd
+until no further change occurs.
+
+# Arguments
+- `model`: Quadratic model mutated in place.
+- `postsolver`: Optional `ParityPostsolver` that records reconstruction data.
+
+# Returns
+- The mutated `model`.
+
+# Side Effects
+- Mutates `model`.
+- May mutate `postsolver`.
+- May set `model.infeasible = true`.
+"""
 function normalize!(model::QPModel, postsolver::Union{Nothing, ParityPostsolver})
     model.infeasible && return model
 
@@ -305,12 +412,17 @@ function normalize!(model::QPModel, postsolver::Union{Nothing, ParityPostsolver}
 end
 
 """
-    fix_parities!(model, propagator) -> Int
+    fix_parities!(model, propagator, postsolver=nothing)
 
 Rewrite variables with fixed parity as `x_var_id := 2 * x_var_id + offset`,
 where `offset` is `0` for even and `1` for odd.
 
-Returns the number of variables transformed.
+# Returns
+- The number of transformed variables.
+
+# Side Effects
+- Mutates `model`.
+- May mutate `postsolver`.
 """
 fix_parities!(model::QPModel, propagator::PropagationManager) = fix_parities!(model, propagator, nothing)
 
@@ -374,6 +486,22 @@ end
 
 fix_parity_patterns!(model::QPModel, propagator::ParityPropagator) = fix_parity_patterns!(model, propagator, nothing)
 
+"""
+    fix_parity_patterns!(model, propagator, postsolver=nothing)
+
+Rewrite eligible parity-equivalent SCCs using a fresh binary helper variable.
+
+For each unlabeled positive/negative SCC pair with enough structure, introduce a
+binary helper variable, rewrite member variables as affine functions of that
+helper, add linking constraints, and update the propagator SCC structure.
+
+# Returns
+- The number of rewritten variables.
+
+# Side Effects
+- Mutates `model` and `propagator`.
+- May mutate `postsolver`.
+"""
 function fix_parity_patterns!(
     model::QPModel,
     propagator::ParityPropagator,
@@ -474,6 +602,17 @@ end
 
 fix_vars!(model::QPModel) = fix_vars!(model, nothing)
 
+"""
+    fix_vars!(model, postsolver=nothing)
+
+Apply one fixed-variable cleanup pass to `model`.
+
+# Returns
+- The mutated `model`.
+
+# Side Effects
+- Mutates `model` and may mutate `postsolver`.
+"""
 function fix_vars!(model::QPModel, postsolver::Union{Nothing, ParityPostsolver})
     _fix_vars_and_singletons!(model, postsolver)
     return model

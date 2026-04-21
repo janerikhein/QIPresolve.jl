@@ -24,19 +24,41 @@ end
     quad_terms = QuadTerm[(2.0, 1, 1), (1.0, 1, 2)]
     lin_terms = LinTerm[(3.0, 1), (-1.0, 2)]
     qe = PC.QuadExpr(quad_terms, lin_terms; constant = 4.5)
-    con = PC.Constraint(next_con_id(), qe, -2.0, 7.0)
+    con = PC.Constraint(next_con_id(), deepcopy(qe), -2.0, 7.0)
 
     x = randn(2)
-    lhs_before = con.lhs
-    rhs_before = con.rhs
-    eval_before = PC.eval_full(con.qe, x)
-
-    PC.normalize!(con)
+    eval_before = PC.eval_full(qe, x)
 
     @test con.qe.constant == 0.0
-    @test con.lhs == lhs_before - 4.5
-    @test con.rhs == rhs_before - 4.5
+    @test con.lhs == -6.5
+    @test con.rhs == 2.5
     @test isapprox(PC.eval_full(con.qe, x), eval_before - 4.5; atol = 1.0e-12)
+
+    PC.normalize!(con)
+    @test con.lhs == -6.5
+    @test con.rhs == 2.5
+end
+
+@testset "Constraint constructor tightens integral normalized bounds" begin
+    con = PC.Constraint(
+        next_con_id(),
+        PC.QuadExpr(QuadTerm[], LinTerm[(1.0, 1)]; constant = 0.5),
+        1.0,
+        3.0,
+    )
+    @test con.qe.constant == 0.0
+    @test con.lhs == 1.0
+    @test con.rhs == 2.0
+    @test PC.is_integer(con)
+
+    infinite = PC.Constraint(
+        next_con_id(),
+        PC.QuadExpr(QuadTerm[(2.0, 1, 1)], LinTerm[(1.0, 1)]; constant = 0.5),
+        -Inf,
+        4.0,
+    )
+    @test infinite.lhs == -Inf
+    @test infinite.rhs == 3.0
 end
 
 @testset "Constraint symmetrize!" begin
@@ -56,7 +78,7 @@ end
 
     @test con.lhs == 2 * lhs_before
     @test con.rhs == 2 * rhs_before
-    @test con.qe.constant == 2.0
+    @test con.qe.constant == 0.0
     @test isapprox(PC.lin(con.qe), 2 * lin_before; atol = 1.0e-12)
     @test isapprox(PC.quad(con.qe), quad_before + transpose(quad_before); atol = 1.0e-12)
     @test isapprox(PC.eval_full(con.qe, x), 2 * eval_before; atol = 1.0e-12)
@@ -173,7 +195,9 @@ end
         1.0,
         3.0,
     )
-    @test !PC.is_integer(fractional_normalized_bound)
+    @test PC.is_integer(fractional_normalized_bound)
+    @test fractional_normalized_bound.lhs == 1.0
+    @test fractional_normalized_bound.rhs == 2.0
 
     normalized_integer_bounds = PC.Constraint(
         next_con_id(),
@@ -182,17 +206,21 @@ end
         1.5,
     )
     @test PC.is_integer(normalized_integer_bounds)
+    @test normalized_integer_bounds.lhs == 0.0
+    @test normalized_integer_bounds.rhs == 1.0
 
     infinite_bound = PC.Constraint(
         next_con_id(),
-        PC.QuadExpr(QuadTerm[(2.0, 1, 1)], LinTerm[(1.0, 1)]),
+        PC.QuadExpr(QuadTerm[(2.0, 1, 1)], LinTerm[(1.0, 1)]; constant = 0.5),
         -Inf,
         4.0,
     )
     @test PC.is_integer(infinite_bound)
+    @test infinite_bound.lhs == -Inf
+    @test infinite_bound.rhs == 3.0
 end
 
-@testset "Constraint cached integrality maintenance" begin
+@testset "Constraint observes QuadExpr integrality cache" begin
     normalized = PC.Constraint(
         next_con_id(),
         PC.QuadExpr(QuadTerm[(2.0, 1, 1), (4.0, 1, 2)], LinTerm[(2.0, 1)]; constant = 1.0),
@@ -246,7 +274,7 @@ end
     @test PC.is_integer(lin_con)
 end
 
-@testset "Constraint integer-valued transforms refresh cached integrality" begin
+@testset "Constraint integer-valued transforms update QuadExpr integrality cache" begin
     affine_con = PC.Constraint(
         next_con_id(),
         PC.QuadExpr(QuadTerm[(1.0, 1, 2)], LinTerm[]),

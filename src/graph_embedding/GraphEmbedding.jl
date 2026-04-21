@@ -1,3 +1,11 @@
+"""
+    GraphEmbedding
+
+Provide graph-generation and embedding-model utilities.
+
+This module exposes helpers for generating Laman and 2-connected graph
+instances together with JuMP models for their integer-coordinate embeddings.
+"""
 module GraphEmbedding
 
 export

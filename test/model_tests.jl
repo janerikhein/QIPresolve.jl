@@ -183,7 +183,7 @@ end
     end
 end
 
-@testset "QPModel var_bound_shift! preserves cached integrality" begin
+@testset "QPModel var_bound_shift! preserves QuadExpr integrality" begin
     vars = Dict{PC.VarId, PC.IntVar}(
         1 => PC.IntVar(0.0, 3.0),
         2 => PC.IntVar(-1.0, 4.0),
@@ -270,7 +270,7 @@ end
     @test PC.get_lin_coeff(model.cons[1].qe, 1) == 2.0
 end
 
-@testset "QPModel transforms can refresh cached integrality before gcd scaling" begin
+@testset "QPModel transforms update QuadExpr integrality before gcd scaling" begin
     vars = Dict{PC.VarId, PC.IntVar}(
         1 => PC.IntVar(0.0, 3.0),
         2 => PC.IntVar(0.0, 3.0),
@@ -455,7 +455,7 @@ end
     @test infeasible_model.infeasible
 end
 
-@testset "QPModel fix_vars! preserves cached integrality after variable removal" begin
+@testset "QPModel fix_vars! preserves QuadExpr integrality after variable removal" begin
     vars = Dict{PC.VarId, PC.IntVar}(
         1 => PC.IntVar(0.0, 0.0),
         2 => PC.IntVar(0.0, 5.0),
