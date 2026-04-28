@@ -144,7 +144,7 @@ function random_quadratic_terms(
 
     for i in 1:nvars
         rand(rng) < density || continue
-        coeff = rand(rng, -500:500)
+        coeff = rand(rng, -20:20)
         coeff == 0 && continue
         push!(terms, (Float64(coeff), i, i))
     end
@@ -152,7 +152,7 @@ function random_quadratic_terms(
     for i in 1:(nvars - 1)
         for j in (i + 1):nvars
             rand(rng) < density || continue
-            coeff = rand(rng, -500:500) * 2
+            coeff = rand(rng, -20:20) * 2
             coeff == 0 && continue
             push!(terms, (Float64(coeff), i, j))
         end
