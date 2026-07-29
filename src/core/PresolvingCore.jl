@@ -16,6 +16,7 @@ module PresolvingCore
 
 include("model/quad_expr.jl")
 include("model/constraint.jl")
+include("residue/interaction_graph.jl")
 include("parity/xor_constraint.jl")
 include("parity/propagation.jl")
 include("parity/parity_postsolve.jl")
@@ -31,6 +32,12 @@ export
     IntVar,
     Constraint,
     QPModel,
+    InteractionGraph,
+    InteractionComponent,
+    LinSingleton,
+    QuadSingleton,
+    NonSingleton,
+    decompose,
     # Model transformations
     fix_vars!,
     normalize!
