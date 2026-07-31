@@ -65,6 +65,8 @@ struct NiceTreeDecomposition
     actions::Vector{ResidueAction}
 end
 
+tree_decomposition_width(td::TreeDecomposition) = maximum(length, td.bags; init = 0) - 1
+
 function _validate_non_singleton(component::NonSingleton)
     nvertices = Graphs.nv(component.graph)
     nvertices >= 2 ||
@@ -403,6 +405,10 @@ decomposition of `component.graph`.
 """
 function action_order(component::NonSingleton)::Vector{ResidueAction}
     td = minimum_degree_tree_decomposition(component)
+    return action_order(component, td)
+end
+
+function action_order(component::NonSingleton, td::TreeDecomposition)::Vector{ResidueAction}
     nice = make_nice_tree_decomposition(td, component.pos_to_var_id)
     return _action_order(nice)
 end

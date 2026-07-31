@@ -43,6 +43,7 @@ export
     ResidueDPResult,
     decompose,
     compute_nonlinear_residue_sets,
+    residue_presolve!,
     # Model transformations
     fix_vars!,
     normalize!

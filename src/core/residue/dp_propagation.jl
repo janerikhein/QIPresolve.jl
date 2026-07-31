@@ -28,6 +28,24 @@ struct ResidueDPResult
     saturated::Bool
 end
 
+struct _StandardizedResidueConstraint
+    con::Constraint
+    var_bounds::Dict{VarId, IntVar}
+    var_ubs::Dict{VarId, Int}
+    constraint_shift::Int
+    objective_shift::Float64
+end
+
+struct _ResidueSetResult
+    residues::BitVector
+    saturated::Bool
+end
+
+struct _ResidueCacheEntry
+    modulus::Int
+    residues::BitVector
+end
+
 function _assignment_count(var_ubs::AbstractVector{Int})
     count = 1
     for ub in var_ubs
@@ -408,11 +426,18 @@ function _component_residue_dp(
         modulus::Int,
         component::NonSingleton,
         var_ubs::Dict{VarId, Int},
+        ;
+        treewidth_threshold::Integer = typemax(Int),
     )
+    td = minimum_degree_tree_decomposition(component)
+    if tree_decomposition_width(td) > treewidth_threshold
+        return ResidueDPResult(component, trues(modulus), true)
+    end
+
     stack = ConditionedResidueSet[]
     removed_ids = Set{VarId}()
 
-    for action in action_order(component)
+    for action in action_order(component, td)
         if action isa LeafAction
             push!(stack, ConditionedResidueSet(modulus))
         elseif action isa IntroduceAction
@@ -462,6 +487,8 @@ function compute_nonlinear_residue_sets(
         m::Integer,
         con::Constraint,
         var_bounds::Dict{VarId, IntVar},
+        ;
+        treewidth_threshold::Integer = typemax(Int),
     )
     m > 0 || throw(ArgumentError("modulus must be positive, got $m"))
     modulus = Int(m)
@@ -471,7 +498,414 @@ function compute_nonlinear_residue_sets(
     results = ResidueDPResult[]
     for component in decompose(interaction_graph)
         component isa NonSingleton || continue
-        push!(results, _component_residue_dp(modulus, component, capped_var_ubs))
+        push!(
+            results,
+            _component_residue_dp(
+                modulus,
+                component,
+                capped_var_ubs;
+                treewidth_threshold = treewidth_threshold,
+            ),
+        )
     end
     return results
+end
+
+function _validate_residue_domain(var_id::VarId, var::IntVar)
+    isfinite(var.lb) ||
+        throw(ArgumentError("variable $var_id must have finite lower bound, got $(var.lb)"))
+    isfinite(var.ub) ||
+        throw(ArgumentError("variable $var_id must have finite upper bound, got $(var.ub)"))
+    isinteger(var.lb) ||
+        throw(ArgumentError("variable $var_id must have integer lower bound, got $(var.lb)"))
+    isinteger(var.ub) ||
+        throw(ArgumentError("variable $var_id must have integer upper bound, got $(var.ub)"))
+    var.lb <= var.ub ||
+        throw(ArgumentError("variable $var_id has inconsistent bounds [$(var.lb), $(var.ub)]"))
+    return nothing
+end
+
+function _has_supported_residue_domain(var::IntVar)
+    return isfinite(var.lb) &&
+        isfinite(var.ub) &&
+        isinteger(var.lb) &&
+        isinteger(var.ub)
+end
+
+function _standardize_residue_constraint(
+        con::Constraint,
+        var_bounds::Dict{VarId, IntVar},
+        obj_expr::Union{Nothing, QuadExpr} = nothing,
+    )
+    is_integer(con) ||
+        throw(ArgumentError("residue propagation requires an integer-valued constraint"))
+
+    shifted_con = deepcopy(con)
+    shift_expr = deepcopy(con.qe)
+    shifted_obj = obj_expr === nothing ? nothing : deepcopy(obj_expr)
+    shifted_bounds = Dict{VarId, IntVar}()
+    shifted_ubs = Dict{VarId, Int}()
+    var_ids = sort!(collect(vars(con.qe)))
+
+    for var_id in var_ids
+        haskey(var_bounds, var_id) ||
+            throw(ArgumentError("missing bounds for variable $var_id"))
+        var = var_bounds[var_id]
+        _validate_residue_domain(var_id, var)
+
+        lb = trunc(Int, var.lb)
+        ub = trunc(Int, var.ub)
+        width = ub - lb
+        offset = Float64(lb)
+
+        affine_transform!(shifted_con, var_id, 1.0, offset)
+        affine_transform!(shift_expr, var_id, 1.0, offset)
+        shifted_obj !== nothing && affine_transform!(shifted_obj, var_id, 1.0, offset)
+
+        shifted_bounds[var_id] = IntVar(0.0, Float64(width))
+        shifted_ubs[var_id] = width
+    end
+
+    isinteger(shift_expr.constant) ||
+        throw(ArgumentError("standardized constraint shift must be integer-valued, got $(shift_expr.constant)"))
+    constraint_shift = trunc(Int, shift_expr.constant)
+    objective_shift = shifted_obj === nothing ? 0.0 : shifted_obj.constant - obj_expr.constant
+
+    return _StandardizedResidueConstraint(
+        shifted_con,
+        shifted_bounds,
+        shifted_ubs,
+        constraint_shift,
+        objective_shift,
+    )
+end
+
+function _generate_residue_moduli(strategy::Symbol, threshold::Integer)
+    threshold_int = Int(threshold)
+
+    if strategy == :small_primes
+        threshold_int < 2 && return Int[]
+        return [candidate for candidate in 2:threshold_int if _is_prime(candidate)]
+    elseif strategy == :powers_of_two
+        threshold_int < 2 && return Int[]
+        moduli = Int[]
+        modulus = 2
+        while modulus <= threshold_int
+            push!(moduli, modulus)
+            modulus > div(typemax(Int), 2) && break
+            modulus *= 2
+        end
+        return moduli
+    elseif strategy == :divisor_free
+        threshold_int < 2 && return Int[]
+        moduli = Int[]
+        for candidate in threshold_int:-1:2
+            _is_divisor_free_candidate(candidate, moduli) || continue
+            push!(moduli, candidate)
+        end
+        return sort!(moduli)
+    end
+
+    throw(ArgumentError("unsupported residue modulus strategy $strategy"))
+end
+
+function _is_divisor_free_candidate(candidate::Int, moduli::AbstractVector{Int})
+    for modulus in moduli
+        (modulus % candidate == 0 || candidate % modulus == 0) && return false
+    end
+    return true
+end
+
+function _is_prime(candidate::Int)
+    candidate < 2 && return false
+    candidate == 2 && return true
+    iseven(candidate) && return false
+
+    divisor = 3
+    while divisor <= div(candidate, divisor)
+        candidate % divisor == 0 && return false
+        divisor += 2
+    end
+    return true
+end
+
+function _zero_residue_set(modulus::Int)
+    residues = falses(modulus)
+    residues[1] = true
+    return residues
+end
+
+function _convolve_linear_singleton!(
+        residues::BitVector,
+        component::LinSingleton,
+        ub::Integer,
+        modulus::Int,
+    )
+    capped_ub = min(Int(ub), modulus - 1)
+    capped_ub >= 0 ||
+        throw(ArgumentError("linear singleton upper bound must be nonnegative, got $ub"))
+
+    nvalues = capped_ub + 1
+    span = 1
+    step = mod(component.lin_coeff, modulus)
+
+    while 2 * span <= nvalues
+        _or_shifted_residues!(residues, copy(residues), span * step, modulus)
+        _is_saturated(residues) && return residues
+        span *= 2
+    end
+
+    remaining = nvalues - span
+    if remaining > 0
+        _or_shifted_residues!(residues, copy(residues), remaining * step, modulus)
+    end
+
+    return residues
+end
+
+function _quad_singleton_residues(
+        component::QuadSingleton,
+        ub::Integer,
+        modulus::Int,
+    )
+    capped_ub = min(Int(ub), modulus - 1)
+    capped_ub >= 0 ||
+        throw(ArgumentError("quadratic singleton upper bound must be nonnegative, got $ub"))
+
+    residues = falses(modulus)
+    @inbounds for value in 0:capped_ub
+        residue = mod(
+            component.quad_coeff * value * value + component.lin_coeff * value,
+            modulus,
+        )
+        residues[residue + 1] = true
+    end
+    return residues
+end
+
+function _convolve_residue_set(
+        residues::BitVector,
+        component_residues::BitVector,
+        modulus::Int,
+    )
+    _is_saturated(component_residues) && return trues(modulus)
+    return _modular_sumset(residues, component_residues, modulus)
+end
+
+function _compute_achievable_residues(
+        m::Integer,
+        con::Constraint,
+        var_bounds::Dict{VarId, IntVar},
+        ;
+        treewidth_threshold::Integer = typemax(Int),
+    )
+    m > 0 || throw(ArgumentError("modulus must be positive, got $m"))
+    modulus = Int(m)
+    capped_var_ubs = _validate_residue_bounds(modulus, con, var_bounds)
+    components = decompose(InteractionGraph(con, modulus))
+    residues = _zero_residue_set(modulus)
+
+    for component in components
+        component isa LinSingleton || continue
+        _convolve_linear_singleton!(
+            residues,
+            component,
+            capped_var_ubs[component.var_id],
+            modulus,
+        )
+        _is_saturated(residues) && return _ResidueSetResult(trues(modulus), true)
+    end
+
+    for component in components
+        component isa QuadSingleton || continue
+        component_residues = _quad_singleton_residues(
+            component,
+            capped_var_ubs[component.var_id],
+            modulus,
+        )
+        residues = _convolve_residue_set(residues, component_residues, modulus)
+        _is_saturated(residues) && return _ResidueSetResult(trues(modulus), true)
+    end
+
+    for component in components
+        component isa NonSingleton || continue
+        result = _component_residue_dp(
+            modulus,
+            component,
+            capped_var_ubs;
+            treewidth_threshold = treewidth_threshold,
+        )
+        residues = _convolve_residue_set(residues, result.residues, modulus)
+        _is_saturated(residues) && return _ResidueSetResult(trues(modulus), true)
+    end
+
+    return _ResidueSetResult(residues, _is_saturated(residues))
+end
+
+function _smallest_attainable_ge(
+        lower::Int,
+        residues::BitVector,
+        modulus::Int,
+        constraint_shift::Int,
+    )
+    @inbounds for delta in 0:(modulus - 1)
+        candidate = lower + delta
+        residues[mod(candidate - constraint_shift, modulus) + 1] && return candidate
+    end
+    error("nonempty residue set has no attainable lower bound modulo $modulus")
+end
+
+function _largest_attainable_le(
+        upper::Int,
+        residues::BitVector,
+        modulus::Int,
+        constraint_shift::Int,
+    )
+    @inbounds for delta in 0:(modulus - 1)
+        candidate = upper - delta
+        residues[mod(candidate - constraint_shift, modulus) + 1] && return candidate
+    end
+    error("nonempty residue set has no attainable upper bound modulo $modulus")
+end
+
+function _tighten_constraint_bounds_by_residues!(
+        con::Constraint,
+        residues::BitVector,
+        modulus::Int,
+        constraint_shift::Int,
+    )
+    changed = false
+
+    if isfinite(con.lhs)
+        new_lhs = Float64(_smallest_attainable_ge(
+            ceil(Int, con.lhs),
+            residues,
+            modulus,
+            constraint_shift,
+        ))
+        if new_lhs > con.lhs
+            con.lhs = _canonicalize_zero(new_lhs)
+            changed = true
+        end
+    end
+
+    if isfinite(con.rhs)
+        new_rhs = Float64(_largest_attainable_le(
+            floor(Int, con.rhs),
+            residues,
+            modulus,
+            constraint_shift,
+        ))
+        if new_rhs < con.rhs
+            con.rhs = _canonicalize_zero(new_rhs)
+            changed = true
+        end
+    end
+
+    return changed
+end
+
+function _reapply_residue_cache!(
+        con::Constraint,
+        cache::Vector{_ResidueCacheEntry},
+        constraint_shift::Int,
+    )
+    changed = false
+    while true
+        pass_changed = false
+        for entry in cache
+            pass_changed = _tighten_constraint_bounds_by_residues!(
+                con,
+                entry.residues,
+                entry.modulus,
+                constraint_shift,
+            ) || pass_changed
+            con.lhs > con.rhs && return true
+        end
+        changed = changed || pass_changed
+        pass_changed || return changed
+    end
+end
+
+function _residue_constraint_status(
+        con::Constraint,
+        var_bounds::Dict{VarId, IntVar},
+    )
+    con.lhs > con.rhs && return :infeasible
+    is_integer(con) || return :skip
+
+    for var_id in vars(con.qe)
+        haskey(var_bounds, var_id) ||
+            throw(ArgumentError("missing bounds for variable $var_id"))
+        var = var_bounds[var_id]
+        var.lb > var.ub && return :infeasible
+        _has_supported_residue_domain(var) || return :skip
+    end
+
+    return :process
+end
+
+function _residue_presolve_constraint!(
+        model::QPModel,
+        con::Constraint,
+        moduli::AbstractVector{Int},
+        treewidth_threshold::Integer,
+    )
+    status = _residue_constraint_status(con, model.vars)
+    if status == :infeasible
+        model.infeasible = true
+        return model
+    elseif status == :skip
+        return model
+    end
+
+    standardized = _standardize_residue_constraint(con, model.vars, model.obj_expr)
+    cache = _ResidueCacheEntry[]
+
+    for modulus in moduli
+        result = _compute_achievable_residues(
+            modulus,
+            standardized.con,
+            standardized.var_bounds;
+            treewidth_threshold = treewidth_threshold,
+        )
+        result.saturated && continue
+
+        push!(cache, _ResidueCacheEntry(modulus, result.residues))
+        _reapply_residue_cache!(con, cache, standardized.constraint_shift)
+        if con.lhs > con.rhs
+            model.infeasible = true
+            return model
+        end
+    end
+
+    return model
+end
+
+"""
+    residue_presolve!(model, strategy; threshold, treewidth_threshold=typemax(Int)) -> QPModel
+
+Run residue-based constraint-bound propagation on `model`.
+
+The pass leaves variables, expressions, and the objective in the original
+coordinate system. Only constraint bounds and `model.infeasible` may change.
+Nonlinear components whose tree-decomposition width exceeds
+`treewidth_threshold` are treated as saturated for that modulus.
+"""
+function residue_presolve!(
+        model::QPModel,
+        strategy::Symbol;
+        threshold::Integer,
+        treewidth_threshold::Integer = typemax(Int),
+    )::QPModel
+    moduli = _generate_residue_moduli(strategy, threshold)
+    model.infeasible && return model
+    isempty(moduli) && return model
+
+    for con in model.cons
+        _residue_presolve_constraint!(model, con, moduli, treewidth_threshold)
+        model.infeasible && return model
+    end
+
+    return model
 end
