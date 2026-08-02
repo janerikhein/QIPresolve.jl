@@ -19,13 +19,16 @@ include("model_io/ModelIO.jl")
 include("config.jl")
 
 using .ModelIO: load_moi_model, from_moi, build_moi_model, build_model
-using .PresolvingCore: affine_transform!, lin_transform!, fix_vars!, normalize!, residue_presolve!
+using .PresolvingCore: affine_transform!, lin_transform!, fix_vars!, normalize!, presolve!, residue_presolve!, postsolve, PresolveResult
 
 export
     # Presolving Core functionality
     fix_vars!,
     normalize!,
+    PresolveResult,
+    presolve!,
     residue_presolve!,
+    postsolve,
     # Model Input/Output
     load_moi_model,
     from_moi,

@@ -25,6 +25,7 @@ include("model/qp_model.jl")
 include("residue/dp_propagation.jl")
 include("parity/xor_model.jl")
 include("parity/parity_presolve.jl")
+include("presolve.jl")
 
 include("utils.jl")
 
@@ -41,9 +42,13 @@ export
     NonSingleton,
     ConditionedResidueSet,
     ResidueDPResult,
+    PresolveResult,
     decompose,
     compute_nonlinear_residue_sets,
+    residue_presolve_constraint!,
     residue_presolve!,
+    presolve!,
+    postsolve,
     # Model transformations
     fix_vars!,
     normalize!
