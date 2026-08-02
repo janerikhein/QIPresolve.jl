@@ -16,12 +16,16 @@ module PresolvingCore
 
 include("model/quad_expr.jl")
 include("model/constraint.jl")
+include("residue/interaction_graph.jl")
+include("residue/tree_decomposition.jl")
 include("parity/xor_constraint.jl")
 include("parity/propagation.jl")
 include("parity/parity_postsolve.jl")
 include("model/qp_model.jl")
+include("residue/dp_propagation.jl")
 include("parity/xor_model.jl")
 include("parity/parity_presolve.jl")
+include("presolve.jl")
 
 include("utils.jl")
 
@@ -31,6 +35,20 @@ export
     IntVar,
     Constraint,
     QPModel,
+    InteractionGraph,
+    InteractionComponent,
+    LinSingleton,
+    QuadSingleton,
+    NonSingleton,
+    ConditionedResidueSet,
+    ResidueDPResult,
+    PresolveResult,
+    decompose,
+    compute_nonlinear_residue_sets,
+    residue_presolve_constraint!,
+    residue_presolve!,
+    presolve!,
+    postsolve,
     # Model transformations
     fix_vars!,
     normalize!
