@@ -4,7 +4,7 @@ using Pkg
 Pkg.activate(joinpath(@__DIR__, ".."))
 
 using JuMP: backend
-using QIPresolve.GraphEmbedding: generate_laman_instance
+using QIPresolve.InstanceGeneration: generate_laman_instance
 using QIPresolve.ModelIO: save_moi
 
 

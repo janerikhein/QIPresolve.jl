@@ -7,7 +7,7 @@ using Graphs
 using Compose
 using Cairo
 using Fontconfig
-using QIPresolve.GraphEmbedding: random_2_connected_graph, plot_2_connected_graph
+using QIPresolve.InstanceGeneration: random_2_connected_graph, plot_2_connected_graph
 
 function parse_int(arg::String, name::String)::Int
     try

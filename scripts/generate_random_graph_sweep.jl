@@ -9,7 +9,7 @@ using JuMP: backend
 import QIPresolve as QIP
 
 PC = QIP.PresolvingCore
-GE = QIP.GraphEmbedding
+GE = QIP.InstanceGeneration
 
 const N_VERTICES = 50
 const N_INSTANCES = 50

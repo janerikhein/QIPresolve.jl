@@ -9,7 +9,7 @@ import MathOptInterface as MOI
 import QIPresolve as QIP
 
 PC = QIP.PresolvingCore
-GE = QIP.GraphEmbedding
+GE = QIP.InstanceGeneration
 
 const N = 10
 const R = 50

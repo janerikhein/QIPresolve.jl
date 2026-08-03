@@ -14,6 +14,11 @@ and display utilities used throughout QIPresolve.
 """
 module PresolvingCore
 
+using ..PresolveConfig:
+    DEFAULT_PRESOLVE_RESIDUE_STRATEGY,
+    DEFAULT_PRESOLVE_RESIDUE_THRESHOLD,
+    DEFAULT_PRESOLVE_TREEWIDTH_THRESHOLD
+
 include("model/quad_expr.jl")
 include("model/constraint.jl")
 include("residue/interaction_graph.jl")

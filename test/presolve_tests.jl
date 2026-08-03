@@ -9,6 +9,12 @@ const PRESOLVE_NEXT_CON_ID = Ref(0)
 presolve_next_con_id() = (PRESOLVE_NEXT_CON_ID[] += 1)
 presolve_empty_objective() = PC.QuadExpr(PresolveQuadTerm[], PresolveLinTerm[])
 
+@testset "presolve config exposes current default values" begin
+    @test QIPresolve.PresolveConfig.DEFAULT_PRESOLVE_RESIDUE_STRATEGY == :divisor_free
+    @test QIPresolve.PresolveConfig.DEFAULT_PRESOLVE_RESIDUE_THRESHOLD == 64
+    @test QIPresolve.PresolveConfig.DEFAULT_PRESOLVE_TREEWIDTH_THRESHOLD == 2
+end
+
 @testset "presolve! returns a result with usable postsolve data" begin
     vars = Dict{PC.VarId, PC.IntVar}(1 => PC.IntVar(0.0, 1.0))
     con = PC.Constraint(

@@ -4,7 +4,7 @@ using Pkg
 Pkg.activate(joinpath(@__DIR__, ".."))
 
 using JuMP: backend
-using QIPresolve.GraphEmbedding: generate_2_connected_instance
+using QIPresolve.InstanceGeneration: generate_2_connected_instance
 using QIPresolve.ModelIO: save_moi
 
 

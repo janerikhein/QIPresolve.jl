@@ -11,7 +11,7 @@ import QIPresolve as QIP
 import SCIP
 
 PC = QIP.PresolvingCore
-GE = QIP.GraphEmbedding
+GE = QIP.InstanceGeneration
 
 const N_MIN = 10
 const N_MAX = 150

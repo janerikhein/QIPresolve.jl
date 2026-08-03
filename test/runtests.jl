@@ -8,7 +8,7 @@ using Test
     include("dp_propagation_tests.jl")
     include("model_tests.jl")
     include("model_io_tests.jl")
-    include("graph_embedding_tests.jl")
+    include("instance_generation_tests.jl")
     include("propagation_tests.jl")
     include("xor_constraint_tests.jl")
     include("xor_model_tests.jl")

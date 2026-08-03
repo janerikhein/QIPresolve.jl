@@ -154,19 +154,20 @@ function _residue_presolve_pass!(
 end
 
 """
-    presolve!(model; residue_strategy=:divisor_free, residue_threshold=64, treewidth_threshold=2)
+    presolve!(model; residue_strategy, residue_threshold, treewidth_threshold)
 
 Run the combined parity and residue presolve pipeline.
 
 The pass mutates `model` in place, alternates parity and residue reductions
 using the improvement gates expected by the combined presolver, and returns the
-mutated model together with postsolve reconstruction data.
+mutated model together with postsolve reconstruction data. Keyword defaults are
+defined in `QIPresolve.PresolveConfig`.
 """
 function presolve!(
         model::QPModel;
-        residue_strategy::Symbol = :divisor_free,
-        residue_threshold::Integer = 64,
-        treewidth_threshold::Integer = 2,
+        residue_strategy::Symbol = DEFAULT_PRESOLVE_RESIDUE_STRATEGY,
+        residue_threshold::Integer = DEFAULT_PRESOLVE_RESIDUE_THRESHOLD,
+        treewidth_threshold::Integer = DEFAULT_PRESOLVE_TREEWIDTH_THRESHOLD,
     )::PresolveResult
     postsolver = ParityPostsolver(keys(model.vars))
     moduli = _generate_residue_moduli(residue_strategy, residue_threshold)

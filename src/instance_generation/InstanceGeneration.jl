@@ -1,12 +1,12 @@
 """
-    GraphEmbedding
+    InstanceGeneration
 
 Provide graph-generation and embedding-model utilities.
 
 This module exposes helpers for generating Laman and 2-connected graph
 instances together with JuMP models for their integer-coordinate embeddings.
 """
-module GraphEmbedding
+module InstanceGeneration
 
 export
     # Laman generation
@@ -16,11 +16,14 @@ export
     # Random 2-connected generation
     random_2_connected_graph,
     plot_2_connected_graph,
-    generate_2_connected_instance
+    generate_2_connected_instance,
+    # Random QIP generation
+    generate_random_qip_model
 
 
 include("embedded_graph.jl")
 include("laman_gen.jl")
 include("random_gen.jl")
+include("random_qip.jl")
 
 end # module

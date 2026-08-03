@@ -7,7 +7,7 @@ using Graphs
 using Compose
 using Cairo
 using Fontconfig
-using QIPresolve.GraphEmbedding.LamanGeneration: random_laman_graph, plot_laman_graph
+using QIPresolve.InstanceGeneration: random_laman_graph, plot_laman_graph
 
 function parse_int(arg::String, name::String)::Int
     try
