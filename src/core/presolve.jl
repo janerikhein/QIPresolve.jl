@@ -13,44 +13,11 @@ struct PresolveResult
     postsolver::ParityPostsolver
 end
 
-function _scale_constraint_by_two!(con::Constraint)
-    var_ids = collect(vars(con.qe))
-
-    for vid in var_ids
-        lin_coeff = get_lin_coeff(con.qe, vid)
-        lin_coeff == 0.0 || set_lin_coeff!(con.qe, vid, 2.0 * lin_coeff)
-
-        diag_coeff = get_quad_coeff(con.qe, vid, vid)
-        diag_coeff == 0.0 || set_quad_coeff!(con.qe, vid, vid, 2.0 * diag_coeff)
-    end
-
-    for (idx, vid_i) in enumerate(var_ids)
-        for vid_j in @view var_ids[(idx + 1):end]
-            quad_coeff = get_quad_coeff(con.qe, vid_i, vid_j)
-            quad_coeff == 0.0 || set_quad_coeff!(con.qe, vid_i, vid_j, 2.0 * quad_coeff)
-        end
-    end
-
-    con.qe.constant *= 2.0
-    con.lhs *= 2.0
-    con.rhs *= 2.0
-    return normalize!(con)
-end
-
-function _symmetrize_formulation!(model::QPModel)
-    model.infeasible && return model
-
-    for con in model.cons
-        _scale_constraint_by_two!(con)
-    end
-
-    return model
-end
-
 function _residue_presolve_pass!(
         model::QPModel,
         moduli::AbstractVector{<:Integer},
-        candidate_con_ids::Union{Nothing, Set{Int}};
+        candidate_con_ids::Union{Nothing, Set{Int}},
+        postsolver::Union{Nothing, ParityPostsolver} = nothing;
         treewidth_threshold::Integer,
     )
     changed = false
@@ -58,12 +25,29 @@ function _residue_presolve_pass!(
     processed = 0
     processed_constraint_ids = Int[]
 
-    (model.infeasible || isempty(moduli)) && return (
+    model.infeasible && return (
         changed = false,
         tightened_to_equality = false,
         processed = 0,
         processed_constraint_ids = processed_constraint_ids,
         infeasible = model.infeasible,
+    )
+
+    normalize!(model, postsolver)
+    model.infeasible && return (
+        changed = true,
+        tightened_to_equality = false,
+        processed = 0,
+        processed_constraint_ids = processed_constraint_ids,
+        infeasible = true,
+    )
+
+    isempty(moduli) && return (
+        changed = false,
+        tightened_to_equality = false,
+        processed = 0,
+        processed_constraint_ids = processed_constraint_ids,
+        infeasible = false,
     )
 
     for con in model.cons
@@ -118,9 +102,6 @@ function presolve!(
     normalize!(model, postsolver)
     model.infeasible && return PresolveResult(model, postsolver)
 
-    _symmetrize_formulation!(model)
-    model.infeasible && return PresolveResult(model, postsolver)
-
     propagator = PropagationManager(VarId[])
 
     parity_presolve!(model, propagator, postsolver)
@@ -129,7 +110,8 @@ function presolve!(
     residue_stats = _residue_presolve_pass!(
         model,
         moduli,
-        nothing;
+        nothing,
+        postsolver;
         treewidth_threshold = treewidth_threshold,
     )
 
@@ -141,7 +123,8 @@ function presolve!(
         residue_stats = _residue_presolve_pass!(
             model,
             moduli,
-            parity_stats.coefficient_changed_constraint_ids;
+            parity_stats.coefficient_changed_constraint_ids,
+            postsolver;
             treewidth_threshold = treewidth_threshold,
         )
     end

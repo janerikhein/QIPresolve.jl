@@ -706,6 +706,62 @@ end
     @test collect(PC.vars(model.cons[1])) == collect(PC.vars(model0.cons[1]))
 end
 
+@testset "parity_presolve! aggregates parallel constraints at entry" begin
+    vars = Dict{PC.VarId, PC.IntVar}(
+        1 => PC.IntVar(0.0, 2.0),
+        2 => PC.IntVar(0.0, 2.0),
+    )
+    con1 = PC.Constraint(
+        parity_next_con_id(),
+        PC.QuadExpr(ParityQuadTerm[(2.0, 1, 2)], ParityLinTerm[]),
+        0.0,
+        8.0,
+    )
+    con2 = PC.Constraint(
+        parity_next_con_id(),
+        PC.QuadExpr(ParityQuadTerm[(2.0, 1, 2)], ParityLinTerm[]),
+        2.0,
+        6.0,
+    )
+    model = PC.QPModel(vars, [con1, con2], parity_empty_objective(), :min)
+
+    stats = PC.parity_presolve!(model)
+
+    @test stats.changed
+    @test !model.infeasible
+    @test length(model.cons) == 1
+    @test model.cons[1].id == con1.id
+    @test model.cons[1].lhs == 2.0
+    @test model.cons[1].rhs == 6.0
+end
+
+@testset "parity_presolve_phase! skips parallel aggregation during phase normalization" begin
+    vars = Dict{PC.VarId, PC.IntVar}(
+        1 => PC.IntVar(0.0, 2.0),
+        2 => PC.IntVar(0.0, 2.0),
+    )
+    con1 = PC.Constraint(
+        parity_next_con_id(),
+        PC.QuadExpr(ParityQuadTerm[(2.0, 1, 2)], ParityLinTerm[]),
+        0.0,
+        8.0,
+    )
+    con2 = PC.Constraint(
+        parity_next_con_id(),
+        PC.QuadExpr(ParityQuadTerm[(2.0, 1, 2)], ParityLinTerm[]),
+        2.0,
+        6.0,
+    )
+    model = PC.QPModel(vars, [con1, con2], parity_empty_objective(), :min)
+    propagator = PC.PropagationManager(PC.VarId[])
+
+    stats = PC.parity_presolve_phase!(model, propagator)
+
+    @test !stats.changed
+    @test !model.infeasible
+    @test length(model.cons) == 2
+end
+
 @testset "postsolve returns original variables for untouched mappings" begin
     postsolver = PC.ParityPostsolver([2, 1])
     reduced_solution = Dict{PC.VarId, Float64}(1 => 3.0, 2 => -1.0, 9 => 7.0)
@@ -964,7 +1020,7 @@ end
     @test !model.infeasible
     @test isempty(model.vars)
     @test isempty(model.cons)
-    @test !stats.changed
+    @test stats.changed
 end
 
 @testset "parity_presolve! accepts shifted binary inputs without pre-normalization" begin

@@ -55,6 +55,47 @@ function _changed_coefficient_constraint_ids(
     return changed_ids
 end
 
+function _quad_expr_state_signature(qe::QuadExpr)
+    var_ids = sort!(collect(vars(qe)))
+    lin_terms = Tuple{VarId, Float64}[]
+    quad_terms = Tuple{VarId, VarId, Float64}[]
+
+    for (index, vid_i) in enumerate(var_ids)
+        lin_coeff = get_lin_coeff(qe, vid_i)
+        lin_coeff == 0.0 || push!(lin_terms, (vid_i, lin_coeff))
+
+        for vid_j in @view var_ids[index:end]
+            quad_coeff = get_quad_coeff(qe, vid_i, vid_j)
+            quad_coeff == 0.0 || push!(quad_terms, (vid_i, vid_j, quad_coeff))
+        end
+    end
+
+    return (
+        constant = qe.constant,
+        lin_terms = Tuple(lin_terms),
+        quad_terms = Tuple(quad_terms),
+    )
+end
+
+function _constraint_state_signature(con::Constraint)
+    return (
+        id = con.id,
+        lhs = con.lhs,
+        rhs = con.rhs,
+        qe = _quad_expr_state_signature(con.qe),
+    )
+end
+
+function _model_state_signature(model::QPModel)
+    var_terms = sort!(collect((var_id, var.lb, var.ub) for (var_id, var) in model.vars))
+    return (
+        vars = Tuple(var_terms),
+        cons = Tuple(_constraint_state_signature(con) for con in model.cons),
+        obj = _quad_expr_state_signature(model.obj_expr),
+        infeasible = model.infeasible,
+    )
+end
+
 """
     get_builders(model, con)
 
@@ -237,9 +278,10 @@ parity_presolve_phase!(model::QPModel, propagator::PropagationManager) = parity_
 
 Execute one parity presolve phase on a quadratic model.
 
-Normalize `model`, build and propagate its parity system, eliminate parity rows,
-and apply any parity-based variable fixes or pattern rewrites discovered during
-the phase.
+    Normalize `model` without aggregating parallel constraints, build and
+    propagate its parity system, eliminate parity rows, apply any parity-based
+    variable fixes or pattern rewrites discovered during the phase, and normalize
+    again without aggregation.
 
 # Arguments
 - `model`: Quadratic model mutated in place.
@@ -272,25 +314,27 @@ function parity_presolve_phase!(
 )
     model.infeasible && return (changed = false, fixed_parities = 0, pattern_rewritten_vars = 0)
 
-    normalize!(model, postsolver)
-    model.infeasible && return (changed = false, fixed_parities = 0, pattern_rewritten_vars = 0)
+    before_normalization = _model_state_signature(model)
+    normalize!(model, postsolver; aggregate_parallel = false)
+    normalization_changed = before_normalization != _model_state_signature(model)
+    model.infeasible && return (changed = normalization_changed, fixed_parities = 0, pattern_rewritten_vars = 0)
 
     if isempty(model.vars)
         finalize_phase!(propagator)
-        return (changed = false, fixed_parities = 0, pattern_rewritten_vars = 0)
+        return (changed = normalization_changed, fixed_parities = 0, pattern_rewritten_vars = 0)
     end
 
     parity_model = build_parity_model(model)
     if isempty(parity_model.pos_to_var_id) || isempty(parity_model.cons)
         finalize_phase!(propagator)
-        return (changed = false, fixed_parities = 0, pattern_rewritten_vars = 0)
+        return (changed = normalization_changed, fixed_parities = 0, pattern_rewritten_vars = 0)
     end
 
     ensure_literals!(propagator, parity_model.pos_to_var_id)
     propagate!(parity_model, propagator)
     if parity_model.infeasible
         model.infeasible = true
-        return (changed = false, fixed_parities = 0, pattern_rewritten_vars = 0)
+        return (changed = normalization_changed, fixed_parities = 0, pattern_rewritten_vars = 0)
     end
 
     while has_unpivoted_con(parity_model)
@@ -299,7 +343,7 @@ function parity_presolve_phase!(
             propagate!(parity_model, propagator)
             if parity_model.infeasible
                 model.infeasible = true
-                return (changed = false, fixed_parities = 0, pattern_rewritten_vars = 0)
+                return (changed = normalization_changed, fixed_parities = 0, pattern_rewritten_vars = 0)
             end
             substitute_pivots_in_conjunctive_terms!(parity_model)
             substitute_parity_pivots!(parity_model)
@@ -308,14 +352,20 @@ function parity_presolve_phase!(
             propagate!(parity_model, propagator)
             if parity_model.infeasible
                 model.infeasible = true
-                return (changed = false, fixed_parities = 0, pattern_rewritten_vars = 0)
+                return (changed = normalization_changed, fixed_parities = 0, pattern_rewritten_vars = 0)
             end
         end
     end
 
     parities_fixed = fix_parities!(model, propagator, postsolver)
     pattern_rewritten_vars = fix_parity_patterns!(model, propagator, postsolver)
-    changed = parities_fixed > 0 || pattern_rewritten_vars > 0
+
+    before_post_normalization = _model_state_signature(model)
+    normalize!(model, postsolver; aggregate_parallel = false)
+    normalization_changed =
+        normalization_changed || before_post_normalization != _model_state_signature(model)
+    changed = normalization_changed || parities_fixed > 0 || pattern_rewritten_vars > 0
+    model.infeasible && return (changed = changed, fixed_parities = parities_fixed, pattern_rewritten_vars = pattern_rewritten_vars)
 
     finalize_phase!(propagator)
     return (changed = changed, fixed_parities = parities_fixed, pattern_rewritten_vars = pattern_rewritten_vars)
@@ -370,6 +420,7 @@ function parity_presolve!(
     propagator::PropagationManager,
     postsolver::Union{Nothing, ParityPostsolver},
 )
+    before_state = _model_state_signature(model)
     before_domains = _var_domain_snapshot(model)
     before_signatures = _constraint_coefficient_signatures(model)
 
@@ -377,13 +428,16 @@ function parity_presolve!(
     fixed_parities = 0
     pattern_rewritten_vars = 0
 
-    while true
+    normalize!(model, postsolver)
+    changed = before_state != _model_state_signature(model)
+
+    while !model.infeasible
         stats = parity_presolve_phase!(model, propagator, postsolver)
         changed = changed || stats.changed
         fixed_parities += stats.fixed_parities
         pattern_rewritten_vars += stats.pattern_rewritten_vars
 
-        (model.infeasible || !stats.changed) && break
+        !stats.changed && break
     end
 
     domains_changed = before_domains != _var_domain_snapshot(model)
@@ -392,7 +446,7 @@ function parity_presolve!(
 
     #add_binary_implications!(model, propagator)
     return (
-        changed = changed || domains_changed || !isempty(coefficient_changed_constraint_ids),
+        changed = changed || before_state != _model_state_signature(model) || domains_changed || !isempty(coefficient_changed_constraint_ids),
         domains_changed = domains_changed,
         coefficient_changed_constraint_ids = coefficient_changed_constraint_ids,
         fixed_parities = fixed_parities,

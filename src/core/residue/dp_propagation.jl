@@ -930,10 +930,9 @@ end
 
 Run residue-based constraint-bound propagation on `model`.
 
-The pass leaves variables, expressions, and the objective in the original
-coordinate system. Only constraint bounds and `model.infeasible` may change.
-Nonlinear components whose tree-decomposition width exceeds
-`treewidth_threshold` are treated as saturated for that modulus.
+The pass first normalizes `model`, then applies residue reductions to the
+remaining constraints. Nonlinear components whose tree-decomposition width
+exceeds `treewidth_threshold` are treated as saturated for that modulus.
 """
 function residue_presolve!(
         model::QPModel,
@@ -942,6 +941,8 @@ function residue_presolve!(
         treewidth_threshold::Integer = typemax(Int),
     )::QPModel
     moduli = _generate_residue_moduli(strategy, threshold)
+    model.infeasible && return model
+    normalize!(model)
     model.infeasible && return model
     isempty(moduli) && return model
 

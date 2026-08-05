@@ -601,32 +601,40 @@ end
     @test result.saturated == all(expected)
 end
 
-@testset "residue_presolve! tightens bounds in original coordinates" begin
-    vars = Dict{PC.VarId, PC.IntVar}(1 => PC.IntVar(1.0, 4.0))
+@testset "residue_presolve! normalizes before residue reductions" begin
+    vars = Dict{PC.VarId, PC.IntVar}(
+        1 => PC.IntVar(2.0, 2.0),
+        2 => PC.IntVar(0.0, 4.0),
+        3 => PC.IntVar(0.0, 4.0),
+    )
     con = PC.Constraint(
         6,
-        PC.QuadExpr(DPQuadTerm[], DPLinTerm[(2.0, 1)]),
-        1.0,
-        9.0,
+        PC.QuadExpr(DPQuadTerm[(4.0, 2, 3)], DPLinTerm[(2.0, 1)]),
+        5.0,
+        17.0,
     )
-    obj = PC.QuadExpr(DPQuadTerm[(1.0, 1, 1)], DPLinTerm[(3.0, 1)]; constant = 4.0)
+    obj = PC.QuadExpr(DPQuadTerm[], DPLinTerm[(3.0, 1)])
     model = PC.QPModel(vars, [con], deepcopy(obj), :min)
 
     @test QIPresolve.residue_presolve!(model, :powers_of_two; threshold = 2) === model
     @test !model.infeasible
-    @test model.vars[1] == PC.IntVar(1.0, 4.0)
+    @test !haskey(model.vars, 1)
+    @test model.vars[2] == PC.IntVar(0.0, 4.0)
+    @test model.vars[3] == PC.IntVar(0.0, 4.0)
     @test model.cons[1].lhs == 2.0
-    @test model.cons[1].rhs == 8.0
-    @test model.obj_expr.constant == obj.constant
-    @test PC.get_quad_coeff(model.obj_expr, 1, 1) == PC.get_quad_coeff(obj, 1, 1)
-    @test PC.get_lin_coeff(model.obj_expr, 1) == PC.get_lin_coeff(obj, 1)
+    @test model.cons[1].rhs == 6.0
+    @test PC.get_quad_coeff(model.cons[1].qe, 2, 3) == 2.0
+    @test model.obj_expr.constant == 6.0
 end
 
-@testset "residue_presolve! reapplies cached moduli to fixed point" begin
-    vars = Dict{PC.VarId, PC.IntVar}(1 => PC.IntVar(0.0, 10.0))
+@testset "residue_presolve! normalizes gcd before cached reductions" begin
+    vars = Dict{PC.VarId, PC.IntVar}(
+        1 => PC.IntVar(0.0, 10.0),
+        2 => PC.IntVar(0.0, 10.0),
+    )
     con = PC.Constraint(
         7,
-        PC.QuadExpr(DPQuadTerm[], DPLinTerm[(6.0, 1)]),
+        PC.QuadExpr(DPQuadTerm[(6.0, 1, 2)], DPLinTerm[]),
         1.0,
         20.0,
     )
@@ -634,8 +642,9 @@ end
 
     PC.residue_presolve!(model, :small_primes; threshold = 3)
     @test !model.infeasible
-    @test model.cons[1].lhs == 6.0
-    @test model.cons[1].rhs == 18.0
+    @test PC.get_quad_coeff(model.cons[1].qe, 1, 2) == 2.0
+    @test model.cons[1].lhs == 2.0
+    @test model.cons[1].rhs == 6.0
 end
 
 @testset "residue_presolve! marks infeasible and skips unsupported domains" begin
@@ -656,11 +665,14 @@ end
     @test infeasible_model.infeasible
 
     nonfinite_model = PC.QPModel(
-        Dict{PC.VarId, PC.IntVar}(1 => PC.IntVar(0.0, Inf)),
+        Dict{PC.VarId, PC.IntVar}(
+            1 => PC.IntVar(0.0, Inf),
+            2 => PC.IntVar(0.0, 4.0),
+        ),
         [
             PC.Constraint(
                 9,
-                PC.QuadExpr(DPQuadTerm[], DPLinTerm[(2.0, 1)]),
+                PC.QuadExpr(DPQuadTerm[(2.0, 1, 2)], DPLinTerm[]),
                 1.0,
                 9.0,
             ),
@@ -674,11 +686,14 @@ end
     @test nonfinite_model.cons[1].rhs == 9.0
 
     fractional_model = PC.QPModel(
-        Dict{PC.VarId, PC.IntVar}(1 => PC.IntVar(0.5, 3.0)),
+        Dict{PC.VarId, PC.IntVar}(
+            1 => PC.IntVar(0.5, 3.0),
+            2 => PC.IntVar(0.0, 4.0),
+        ),
         [
             PC.Constraint(
                 10,
-                PC.QuadExpr(DPQuadTerm[], DPLinTerm[(2.0, 1)]),
+                PC.QuadExpr(DPQuadTerm[(2.0, 1, 2)], DPLinTerm[]),
                 1.0,
                 9.0,
             ),

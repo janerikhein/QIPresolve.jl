@@ -412,6 +412,189 @@ end
     @test isempty(model.cons)
 end
 
+@testset "QPModel normalize! keyword controls skip individual steps" begin
+    fixed_model = PC.QPModel(
+        Dict{PC.VarId, PC.IntVar}(1 => PC.IntVar(2.0, 2.0)),
+        PC.Constraint[],
+        PC.QuadExpr(QuadTerm[], LinTerm[]),
+        :min,
+    )
+    PC.normalize!(fixed_model; remove_fixed_vars = false)
+    @test haskey(fixed_model.vars, 1)
+
+    shifted_binary_model = PC.QPModel(
+        Dict{PC.VarId, PC.IntVar}(1 => PC.IntVar(2.0, 3.0)),
+        PC.Constraint[],
+        PC.QuadExpr(QuadTerm[], LinTerm[]),
+        :min,
+    )
+    PC.normalize!(shifted_binary_model; standardize_binaries = false)
+    @test shifted_binary_model.vars[1] == PC.IntVar(2.0, 3.0)
+
+    diagonal_con = PC.Constraint(
+        next_con_id(),
+        PC.QuadExpr(QuadTerm[(3.0, 1, 1)], LinTerm[]),
+        0.0,
+        3.0,
+    )
+    diagonal_model = PC.QPModel(
+        Dict{PC.VarId, PC.IntVar}(1 => PC.IntVar(0.0, 1.0)),
+        [diagonal_con],
+        PC.QuadExpr(QuadTerm[], LinTerm[]),
+        :min,
+    )
+    PC.normalize!(diagonal_model; fold_binary_diagonal = false, scale_gcd = false)
+    @test PC.get_quad_coeff(diagonal_model.cons[1].qe, 1, 1) == 3.0
+
+    odd_bilinear = PC.Constraint(
+        next_con_id(),
+        PC.QuadExpr(QuadTerm[(3.0, 1, 2)], LinTerm[]),
+        0.0,
+        9.0,
+    )
+    odd_bilinear_model = PC.QPModel(
+        Dict{PC.VarId, PC.IntVar}(1 => PC.IntVar(0.0, 2.0), 2 => PC.IntVar(0.0, 2.0)),
+        [odd_bilinear],
+        PC.QuadExpr(QuadTerm[], LinTerm[]),
+        :min,
+    )
+    PC.normalize!(odd_bilinear_model; symmetrize_quadratic = false)
+    @test !PC.is_integer(odd_bilinear_model.cons[1])
+
+    gcd_con = PC.Constraint(
+        next_con_id(),
+        PC.QuadExpr(QuadTerm[(4.0, 1, 2)], LinTerm[]),
+        0.0,
+        8.0,
+    )
+    gcd_model = PC.QPModel(
+        Dict{PC.VarId, PC.IntVar}(1 => PC.IntVar(0.0, 2.0), 2 => PC.IntVar(0.0, 2.0)),
+        [gcd_con],
+        PC.QuadExpr(QuadTerm[], LinTerm[]),
+        :min,
+    )
+    PC.normalize!(gcd_model; scale_gcd = false)
+    @test PC.get_quad_coeff(gcd_model.cons[1].qe, 1, 2) == 4.0
+
+    con1 = PC.Constraint(
+        next_con_id(),
+        PC.QuadExpr(QuadTerm[(2.0, 1, 2)], LinTerm[]),
+        0.0,
+        6.0,
+    )
+    con2 = PC.Constraint(
+        next_con_id(),
+        PC.QuadExpr(QuadTerm[(2.0, 1, 2)], LinTerm[]),
+        2.0,
+        4.0,
+    )
+    aggregate_model = PC.QPModel(
+        Dict{PC.VarId, PC.IntVar}(1 => PC.IntVar(0.0, 2.0), 2 => PC.IntVar(0.0, 2.0)),
+        [con1, con2],
+        PC.QuadExpr(QuadTerm[], LinTerm[]),
+        :min,
+    )
+    PC.normalize!(aggregate_model; aggregate_parallel = false)
+    @test length(aggregate_model.cons) == 2
+end
+
+@testset "QPModel normalize! symmetrizes odd bilinear coefficients idempotently" begin
+    con = PC.Constraint(
+        next_con_id(),
+        PC.QuadExpr(QuadTerm[(3.0, 1, 2)], LinTerm[]),
+        3.0,
+        9.0,
+    )
+    model = PC.QPModel(
+        Dict{PC.VarId, PC.IntVar}(1 => PC.IntVar(0.0, 2.0), 2 => PC.IntVar(0.0, 2.0)),
+        [con],
+        PC.QuadExpr(QuadTerm[], LinTerm[]),
+        :min,
+    )
+
+    PC.normalize!(model)
+
+    @test PC.is_integer(model.cons[1])
+    @test PC.get_quad_coeff(model.cons[1].qe, 1, 2) == 2.0
+    @test model.cons[1].lhs == 2.0
+    @test model.cons[1].rhs == 6.0
+
+    PC.normalize!(model)
+
+    @test PC.get_quad_coeff(model.cons[1].qe, 1, 2) == 2.0
+    @test model.cons[1].lhs == 2.0
+    @test model.cons[1].rhs == 6.0
+end
+
+@testset "QPModel normalize! aggregates parallel constraints" begin
+    vars = Dict{PC.VarId, PC.IntVar}(
+        1 => PC.IntVar(0.0, 2.0),
+        2 => PC.IntVar(0.0, 2.0),
+    )
+
+    same1 = PC.Constraint(
+        next_con_id(),
+        PC.QuadExpr(QuadTerm[(2.0, 1, 2)], LinTerm[]),
+        0.0,
+        10.0,
+    )
+    same2 = PC.Constraint(
+        next_con_id(),
+        PC.QuadExpr(QuadTerm[(2.0, 1, 2)], LinTerm[]),
+        2.0,
+        8.0,
+    )
+    same_model = PC.QPModel(deepcopy(vars), [same1, same2], PC.QuadExpr(QuadTerm[], LinTerm[]), :min)
+
+    PC.normalize!(same_model)
+
+    @test !same_model.infeasible
+    @test length(same_model.cons) == 1
+    @test same_model.cons[1].id == same1.id
+    @test same_model.cons[1].lhs == 2.0
+    @test same_model.cons[1].rhs == 8.0
+
+    opposite1 = PC.Constraint(
+        next_con_id(),
+        PC.QuadExpr(QuadTerm[(2.0, 1, 2)], LinTerm[]),
+        0.0,
+        10.0,
+    )
+    opposite2 = PC.Constraint(
+        next_con_id(),
+        PC.QuadExpr(QuadTerm[(-2.0, 1, 2)], LinTerm[]),
+        -6.0,
+        -2.0,
+    )
+    opposite_model = PC.QPModel(deepcopy(vars), [opposite1, opposite2], PC.QuadExpr(QuadTerm[], LinTerm[]), :min)
+
+    PC.normalize!(opposite_model)
+
+    @test !opposite_model.infeasible
+    @test length(opposite_model.cons) == 1
+    @test opposite_model.cons[1].id == opposite1.id
+    @test opposite_model.cons[1].lhs == 2.0
+    @test opposite_model.cons[1].rhs == 6.0
+
+    infeasible1 = PC.Constraint(
+        next_con_id(),
+        PC.QuadExpr(QuadTerm[(2.0, 1, 2)], LinTerm[]),
+        0.0,
+        3.0,
+    )
+    infeasible2 = PC.Constraint(
+        next_con_id(),
+        PC.QuadExpr(QuadTerm[(2.0, 1, 2)], LinTerm[]),
+        4.0,
+        5.0,
+    )
+    infeasible_model = PC.QPModel(deepcopy(vars), [infeasible1, infeasible2], PC.QuadExpr(QuadTerm[], LinTerm[]), :min)
+
+    PC.normalize!(infeasible_model)
+
+    @test infeasible_model.infeasible
+end
+
 @testset "QPModel fix_vars! handles singleton linear constraints with negative coefficients" begin
     vars = Dict{PC.VarId, PC.IntVar}(1 => PC.IntVar(0.0, 1.0))
     ranged = PC.Constraint(

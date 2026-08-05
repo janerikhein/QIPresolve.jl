@@ -177,18 +177,20 @@ end
 
 @testset "filtered residue passes only touch candidate constraints" begin
     vars = Dict{PC.VarId, PC.IntVar}(
-        1 => PC.IntVar(1.0, 4.0),
-        2 => PC.IntVar(1.0, 4.0),
+        1 => PC.IntVar(0.0, 4.0),
+        2 => PC.IntVar(0.0, 4.0),
+        3 => PC.IntVar(0.0, 4.0),
+        4 => PC.IntVar(0.0, 4.0),
     )
     con1 = PC.Constraint(
         presolve_next_con_id(),
-        PC.QuadExpr(PresolveQuadTerm[], PresolveLinTerm[(2.0, 1)]),
+        PC.QuadExpr(PresolveQuadTerm[(2.0, 1, 3)], PresolveLinTerm[]),
         1.0,
         9.0,
     )
     con2 = PC.Constraint(
         presolve_next_con_id(),
-        PC.QuadExpr(PresolveQuadTerm[], PresolveLinTerm[(2.0, 2)]),
+        PC.QuadExpr(PresolveQuadTerm[(2.0, 2, 4)], PresolveLinTerm[]),
         1.0,
         9.0,
     )

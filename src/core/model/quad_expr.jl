@@ -512,47 +512,6 @@ function remove_var!(qe::QuadExpr, id::VarId; clear_buf::Bool = true)
 end
 
 """
-    normalize!(qe)
-
-Remove inactive variables from `qe`.
-
-Delete variables whose linear and quadratic coefficients are all zero and refresh
-the cached integrality flag.
-
-# Returns
-- The mutated `qe`.
-
-# Side Effects
-- Mutates the variable set and cached metadata of `qe`.
-"""
-function normalize!(qe::QuadExpr)
-    for pos in reverse(1:qe.nvars)
-        phys_pos = qe.perm[pos]
-
-        qe.lin_buf[phys_pos] != 0 && continue
-
-        all_zero = true
-        for other_pos in 1:qe.nvars
-            phys_other = qe.perm[other_pos]
-            q = if phys_pos <= phys_other
-                @inbounds qe.quad_buf[phys_pos, phys_other]
-            else
-                @inbounds qe.quad_buf[phys_other, phys_pos]
-            end
-            if q != 0
-                all_zero = false
-                break
-            end
-        end
-        if all_zero
-            remove_var!(qe, qe.pos_to_var[pos])
-        end
-    end
-    return _refresh_is_integer!(qe)
-end
-
-
-"""
     _ensure_capacity!(qe, needed)
 
 Ensure internal buffers can hold at least `needed` logical variables.
