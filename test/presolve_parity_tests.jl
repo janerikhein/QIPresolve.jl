@@ -435,9 +435,14 @@ end
     )
     model = PC.QPModel(vars, [con], parity_empty_objective(), :min)
 
-    out = PC.parity_presolve!(model)
+    stats = PC.parity_presolve!(model)
 
-    @test out === model
+    @test stats.changed
+    @test stats.domains_changed
+    @test isempty(stats.coefficient_changed_constraint_ids)
+    @test stats.fixed_parities == 0
+    @test stats.pattern_rewritten_vars == 0
+    @test !stats.infeasible
     @test !model.infeasible
     @test !haskey(model.vars, 1)
     @test isempty(model.cons)
@@ -652,9 +657,29 @@ end
     )
     model = PC.QPModel(vars, [con1, con2], parity_empty_objective(), :min)
 
-    PC.parity_presolve!(model)
+    stats = PC.parity_presolve!(model)
 
     @test model.infeasible
+    @test stats.infeasible
+end
+
+@testset "parity_presolve! reports initially infeasible models" begin
+    model = PC.QPModel(
+        Dict{PC.VarId, PC.IntVar}(),
+        PC.Constraint[],
+        parity_empty_objective(),
+        :min,
+    )
+    model.infeasible = true
+
+    stats = PC.parity_presolve!(model)
+
+    @test !stats.changed
+    @test !stats.domains_changed
+    @test isempty(stats.coefficient_changed_constraint_ids)
+    @test stats.fixed_parities == 0
+    @test stats.pattern_rewritten_vars == 0
+    @test stats.infeasible
 end
 
 @testset "parity_presolve! is a no-op without parity structure" begin
@@ -890,9 +915,15 @@ end
     model = PC.QPModel(vars, PC.Constraint[], parity_empty_objective(), :min)
     postsolver = PC.ParityPostsolver(keys(vars))
 
-    PC.parity_presolve!(model, postsolver)
+    stats = PC.parity_presolve!(model, postsolver)
 
     @test !model.infeasible
+    @test stats.changed
+    @test stats.domains_changed
+    @test isempty(stats.coefficient_changed_constraint_ids)
+    @test stats.fixed_parities == 0
+    @test stats.pattern_rewritten_vars == 0
+    @test !stats.infeasible
     @test model.vars[1] == PC.IntVar(0.0, 1.0)
     @test PC.postsolve(postsolver, Dict{PC.VarId, Float64}(1 => 0.0)) == Dict{PC.VarId, Float64}(1 => 3.0)
     @test PC.postsolve(postsolver, Dict{PC.VarId, Float64}(1 => 1.0)) == Dict{PC.VarId, Float64}(1 => 4.0)
