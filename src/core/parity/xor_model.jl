@@ -285,8 +285,8 @@ end
 Apply the fixing `vid = val` to every row of `model` containing `vid`.
 """
 function _fix_var_rows!(changed::BitVector, model::ParityModel, vid::VarId, val::Bool)
-    
-    vid_idx = model.var_id_to_pos[vid]
+    vid_idx = get(model.var_id_to_pos, vid, 0)
+    vid_idx == 0 && return model
 
     for (i, con) in enumerate(model.cons)
         _constraint_contains_var(con, vid_idx) || continue
@@ -314,8 +314,11 @@ function _substitute_var_rows!(
         return model
     end
 
-    vid_idx = model.var_id_to_pos[vid]
-    subst_idx = model.var_id_to_pos[substid]
+    vid_idx = get(model.var_id_to_pos, vid, 0)
+    vid_idx == 0 && return model
+
+    subst_idx = get(model.var_id_to_pos, substid, 0)
+    subst_idx == 0 && return model
 
     for (i, con) in enumerate(model.cons)
         _constraint_contains_var(con, vid_idx) || continue

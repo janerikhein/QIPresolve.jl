@@ -1,5 +1,7 @@
 using Test
 using QIPresolve
+import MathOptInterface as MOI
+import MathOptInterface.FileFormats as FF
 import QIPresolve.PresolvingCore as PC
 
 const IOMOI = QIPresolve.ModelIO.MOI
@@ -7,6 +9,12 @@ const IOQuadTerm = Tuple{Float64, PC.VarId, PC.VarId}
 const IOLinTerm = Tuple{Float64, PC.VarId}
 
 io_empty_qe() = PC.QuadExpr(IOQuadTerm[], IOLinTerm[])
+
+function io_load_lp_core_model(file_path::AbstractString)
+    moi_model = FF.Model(format = FF.FORMAT_LP)
+    MOI.read_from_file(moi_model, file_path)
+    return QIPresolve.build_model(QIPresolve.from_moi(moi_model))
+end
 
 function io_constraint_indices(model, ::Type{F}, ::Type{S}) where {F, S}
     return IOMOI.get(model, IOMOI.ListOfConstraintIndices{F, S}())
@@ -25,6 +33,42 @@ function io_assert_same_expr(actual::PC.QuadExpr, expected::PC.QuadExpr)
         for var_id_2 in @view expected_vars[i:end]
             @test isapprox(PC.get_quad_coeff(actual, var_id_1, var_id_2), PC.get_quad_coeff(expected, var_id_1, var_id_2); atol = 1.0e-12)
         end
+    end
+end
+
+@testset "LP file import path supports presolve" begin
+    lp_path = tempname() * ".lp"
+    write(
+        lp_path,
+        """
+        Minimize
+         obj: x1 + 2 x2
+        Subject To
+         c1: x1 + x2 <= 1
+        Bounds
+         0 <= x1 <= 1
+         0 <= x2 <= 1
+        Binary
+         x1
+         x2
+        End
+        """,
+    )
+
+    try
+        model = io_load_lp_core_model(lp_path)
+        before_nvars = length(model.vars)
+        before_ncons = length(model.cons)
+
+        result = QIPresolve.presolve!(model)
+
+        @test result isa QIPresolve.PresolveResult
+        @test result.model === model
+        @test !model.infeasible
+        @test before_nvars == 2
+        @test before_ncons == 1
+    finally
+        rm(lp_path; force = true)
     end
 end
 

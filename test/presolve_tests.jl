@@ -1,6 +1,8 @@
 using Test
+using JuMP: backend
 import QIPresolve
 import QIPresolve.PresolvingCore as PC
+using QIPresolve.InstanceGeneration: generate_random_qip_model
 
 const PresolveQuadTerm = Tuple{Float64, PC.VarId, PC.VarId}
 const PresolveLinTerm = Tuple{Float64, PC.VarId}
@@ -235,4 +237,30 @@ end
     @test stats.pattern_rewritten_vars == 2
     @test !isempty(new_con_ids)
     @test all(con_id in stats.coefficient_changed_constraint_ids for con_id in new_con_ids)
+end
+
+@testset "presolve! handles stale parity events from script random model" begin
+    random_qip_kwargs = (
+        p_con_eq = 0.0,
+        var_threshold_lb = -10,
+        var_threshold_ub = 10,
+        p_var_is_candidate = 0.02,
+        p_var_bilin = 0.4,
+        p_var_diag = 0.5,
+        p_var_lin = 0.0,
+        coeff_lb = -50,
+        coeff_ub = 50,
+        force_diag_even = false,
+        force_lin_even = false,
+        force_feasibility = true,
+        constraint_slack_range = -10:10,
+    )
+    jump_model, _ = generate_random_qip_model(100, 200; random_qip_kwargs..., seed = 42)
+    model = QIPresolve.build_model(QIPresolve.from_moi(backend(jump_model)))
+
+    result = QIPresolve.presolve!(model)
+
+    @test result isa QIPresolve.PresolveResult
+    @test result.model === model
+    @test !model.infeasible
 end
