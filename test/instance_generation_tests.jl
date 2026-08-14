@@ -1,12 +1,19 @@
 using Test
 using Graphs
 using JuMP: backend
+import JuMP
+import MathOptInterface as MOI
 import QIPresolve
 import QIPresolve.PresolvingCore as PC
+import QIPresolve.InstanceGeneration as IG
 using QIPresolve.InstanceGeneration:
     generate_2_connected_instance,
+    generate_globally_rigid_instance,
+    generate_laman_instance,
     generate_random_qip_model,
-    random_2_connected_graph
+    random_2_connected_graph,
+    random_globally_rigid_graph,
+    random_laman_graph
 
 
 canonical_edges(g::Graphs.AbstractGraph) = sort(map(e -> (min(src(e), dst(e)), max(src(e), dst(e))), collect(edges(g))))
@@ -87,6 +94,191 @@ function nonzero_quad_terms(expr::PC.QuadExpr)
 end
 
 is_even_coeff(coeff::Float64) = isinteger(coeff) && iseven(round(Int, coeff))
+
+function remains_connected_after_removing_two(g::Graphs.AbstractGraph)
+    n = nv(g)
+    for first_vertex in 1:(n - 1)
+        for second_vertex in (first_vertex + 1):n
+            retained = [vertex for vertex in 1:n if vertex != first_vertex && vertex != second_vertex]
+            subgraph, _ = induced_subgraph(g, retained)
+            is_connected(subgraph) || return false
+        end
+    end
+    return true
+end
+
+model_bounds(x, y) = [
+    (
+        JuMP.lower_bound(x[i]),
+        JuMP.upper_bound(x[i]),
+        JuMP.lower_bound(y[i]),
+        JuMP.upper_bound(y[i]),
+    )
+    for i in eachindex(x)
+]
+
+
+@testset "graph instance public API" begin
+    exported_names = names(IG)
+    @test :generate_2_connected_instance in exported_names
+    @test :generate_laman_instance in exported_names
+    @test :generate_globally_rigid_instance in exported_names
+
+    for helper in (
+            :random_2_connected_graph,
+            :plot_2_connected_graph,
+            :random_laman_graph,
+            :plot_laman_graph,
+            :random_globally_rigid_graph,
+            :plot_globally_rigid_graph,
+        )
+        @test isdefined(IG, helper)
+        @test helper ∉ exported_names
+    end
+end
+
+
+@testset "Laman graph generation" begin
+    @test_throws ArgumentError random_laman_graph(2)
+    @test_throws ArgumentError random_laman_graph(5; R = -1)
+    @test_throws ArgumentError random_laman_graph(5; R = 0)
+    @test_throws ArgumentError random_laman_graph(5; pH2 = -0.1)
+    @test_throws ArgumentError random_laman_graph(5; pH2 = 1.1)
+    @test_throws ArgumentError random_laman_graph(5; max_global_tries = 0)
+    @test_throws ArgumentError random_laman_graph(5; max_tries_H1 = 0)
+    @test_throws ArgumentError random_laman_graph(5; max_tries_H2 = 0)
+
+    graph_1, coords_1 = random_laman_graph(8; R = 8, pH2 = 0.65, seed = 101)
+    graph_2, coords_2 = random_laman_graph(8; R = 8, pH2 = 0.65, seed = 101)
+    @test nv(graph_1) == 8
+    @test ne(graph_1) == 2nv(graph_1) - 3
+    @test canonical_edges(graph_1) == canonical_edges(graph_2)
+    @test coord_tuples(coords_1) == coord_tuples(coords_2)
+    @test allunique(coord_tuples(coords_1))
+end
+
+
+@testset "globally rigid graph generation" begin
+    @test_throws ArgumentError random_globally_rigid_graph(3)
+    @test_throws ArgumentError random_globally_rigid_graph(5; R = -1)
+    @test_throws ArgumentError random_globally_rigid_graph(10; R = 1)
+    @test_throws ArgumentError random_globally_rigid_graph(5; max_global_tries = 0)
+    @test_throws ArgumentError random_globally_rigid_graph(5; max_tries_H2 = 0)
+
+    base_graph, base_coords = random_globally_rigid_graph(4; R = 5, seed = 8)
+    @test canonical_edges(base_graph) == canonical_edges(complete_graph(4))
+    @test length(base_coords) == 4
+    @test IG.no_three_collinear(base_coords)
+
+    graph_1, coords_1 = random_globally_rigid_graph(9; R = 9, seed = 77)
+    graph_2, coords_2 = random_globally_rigid_graph(9; R = 9, seed = 77)
+    @test nv(graph_1) == 9
+    @test ne(graph_1) == 2nv(graph_1) - 2
+    @test canonical_edges(graph_1) == canonical_edges(graph_2)
+    @test coord_tuples(coords_1) == coord_tuples(coords_2)
+    @test allunique(coord_tuples(coords_1))
+    @test remains_connected_after_removing_two(graph_1)
+end
+
+
+@testset "embedded model anchor bounds and symmetry" begin
+    graph = complete_graph(4)
+    coords = IG.IPoint[
+        IG.IPoint(2, 3),
+        IG.IPoint(5, 3),
+        IG.IPoint(2, 7),
+        IG.IPoint(6, 7),
+    ]
+    embedded = IG.to_embedded(graph, coords)
+
+    center_refs, center_coords, center_distances = IG.embedding_references(embedded, Int[])
+    @test center_refs == [2]
+    @test center_coords == [IG.IPoint(0, 0)]
+    @test center_distances[1, :] ≈ [3.0, 0.0, 5.0, sqrt(17.0)]
+
+    model_0, x_0, y_0 = IG.build_embedding_model(embedded)
+    @test model_bounds(x_0, y_0) == [
+        (-3.0, 3.0, -3.0, 3.0),
+        (0.0, 0.0, 0.0, 0.0),
+        (-5.0, 5.0, -5.0, 5.0),
+        (-4.0, 4.0, -4.0, 4.0),
+    ]
+    @test JuMP.num_constraints(model_0, JuMP.QuadExpr, MOI.EqualTo{Float64}) == 6
+    @test JuMP.num_constraints(model_0, JuMP.QuadExpr, MOI.LessThan{Float64}) == 3
+    @test JuMP.num_constraints(model_0, JuMP.AffExpr, MOI.EqualTo{Float64}) == 2
+    @test JuMP.num_constraints(model_0, JuMP.AffExpr, MOI.LessThan{Float64}) == 1
+    @test JuMP.num_constraints(model_0, JuMP.AffExpr, MOI.GreaterThan{Float64}) == 2
+
+    anchor_refs, anchor_coords, anchor_distances = IG.embedding_references(embedded, [2])
+    @test anchor_refs == [2]
+    @test anchor_coords == [coords[2]]
+    @test anchor_distances[1, :] ≈ [3.0, 0.0, 5.0, sqrt(17.0)]
+
+    model_1, x_1, y_1 = IG.build_embedding_model(embedded, [2])
+    @test model_bounds(x_1, y_1) == [
+        (2.0, 8.0, 0.0, 6.0),
+        (5.0, 5.0, 3.0, 3.0),
+        (0.0, 10.0, -2.0, 8.0),
+        (1.0, 9.0, -1.0, 7.0),
+    ]
+    @test JuMP.num_constraints(model_1, JuMP.QuadExpr, MOI.LessThan{Float64}) == 3
+    @test JuMP.num_constraints(model_1, JuMP.AffExpr, MOI.EqualTo{Float64}) == 2
+    @test JuMP.num_constraints(model_1, JuMP.AffExpr, MOI.LessThan{Float64}) == 1
+    @test JuMP.num_constraints(model_1, JuMP.AffExpr, MOI.GreaterThan{Float64}) == 2
+    diagonal_constraint = only(JuMP.all_constraints(model_1, JuMP.AffExpr, MOI.LessThan{Float64}))
+    @test JuMP.constraint_object(diagonal_constraint).set.upper == -2.0
+    quadrant_constraints = JuMP.all_constraints(model_1, JuMP.AffExpr, MOI.GreaterThan{Float64})
+    @test sort([JuMP.constraint_object(constraint).set.lower for constraint in quadrant_constraints]) == [3.0, 5.0]
+
+    reference_vertices, reference_coords, distances = IG.embedding_references(embedded, [1, 4])
+    x_lower, x_upper, y_lower, y_upper = IG.merged_coordinate_bounds(reference_coords, distances)
+    @test reference_vertices == [1, 4]
+    @test reference_coords == coords[[1, 4]]
+    @test x_lower == [2, 2, 2, 6]
+    @test x_upper == [2, 5, 6, 6]
+    @test y_lower == [3, 3, 3, 7]
+    @test y_upper == [3, 6, 7, 7]
+
+    model_2, x_2, y_2 = IG.build_embedding_model(embedded, [1, 4])
+    @test model_bounds(x_2, y_2) == [
+        (2.0, 2.0, 3.0, 3.0),
+        (2.0, 5.0, 3.0, 6.0),
+        (2.0, 6.0, 3.0, 7.0),
+        (6.0, 6.0, 7.0, 7.0),
+    ]
+    @test JuMP.num_constraints(model_2, JuMP.QuadExpr, MOI.LessThan{Float64}) == 6
+    @test JuMP.num_constraints(model_2, JuMP.AffExpr, MOI.EqualTo{Float64}) == 4
+    @test JuMP.num_constraints(model_2, JuMP.AffExpr, MOI.LessThan{Float64}) == 0
+    @test JuMP.num_constraints(model_2, JuMP.AffExpr, MOI.GreaterThan{Float64}) == 0
+
+    @test_throws ArgumentError IG.build_embedding_model(embedded, [0])
+    @test_throws ArgumentError IG.build_embedding_model(embedded, [1, 1])
+    @test_throws ArgumentError IG.build_embedding_model(embedded, [5])
+end
+
+
+@testset "anchor counts across graph instance generators" begin
+    generators = (
+        generate_2_connected_instance,
+        generate_laman_instance,
+        generate_globally_rigid_instance,
+    )
+
+    for generator in generators
+        for num_anchors in (0, 1, 2, 6)
+            model, x, y = generator(6; R = 8, seed = 29, num_anchors = num_anchors)
+            @test model !== nothing
+            @test length(x) == 6
+            @test length(y) == 6
+        end
+        @test_throws ArgumentError generator(6; num_anchors = -1)
+        @test_throws ArgumentError generator(6; num_anchors = 7)
+
+        _, x_1, y_1 = generator(6; R = 8, seed = 91, num_anchors = 2)
+        _, x_2, y_2 = generator(6; R = 8, seed = 91, num_anchors = 2)
+        @test model_bounds(x_1, y_1) == model_bounds(x_2, y_2)
+    end
+end
 
 
 @testset "random_2_connected_graph validation" begin
