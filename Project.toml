@@ -15,6 +15,7 @@ MathOptInterface = "b8f27783-ece8-5eb3-8dc8-9495eed66fee"
 Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
 SCIP = "82193955-e24f-5292-bf16-6f2c5261a85f"
 SimpleWeightedGraphs = "47aef6b3-ad0c-573a-a1e2-d07658019622"
+Statistics = "10745b16-79ce-11e8-11f9-7d13ad32a3b2"
 
 [compat]
 Cairo = "1.1.1"
@@ -28,4 +29,5 @@ MathOptInterface = "1.48.0"
 Random = "1.11.0"
 SCIP = "0.12.8"
 SimpleWeightedGraphs = "1.5.1"
+Statistics = "1.11.0"
 julia = "1.11"

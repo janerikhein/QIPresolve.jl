@@ -7,6 +7,7 @@ using Test
     include("tree_decomposition_tests.jl")
     include("dp_propagation_tests.jl")
     include("model_tests.jl")
+    include("model_stats_tests.jl")
     include("model_io_tests.jl")
     include("instance_generation_tests.jl")
     include("propagation_tests.jl")

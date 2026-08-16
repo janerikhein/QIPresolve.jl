@@ -27,6 +27,7 @@ include("parity/xor_constraint.jl")
 include("parity/propagation.jl")
 include("parity/parity_postsolve.jl")
 include("model/qp_model.jl")
+include("stats/model_stats.jl")
 include("model/normalization.jl")
 include("residue/dp_propagation.jl")
 include("parity/xor_model.jl")
@@ -41,6 +42,7 @@ export
     IntVar,
     Constraint,
     QPModel,
+    ModelStats,
     InteractionGraph,
     InteractionComponent,
     LinSingleton,
