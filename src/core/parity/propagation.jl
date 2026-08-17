@@ -799,6 +799,143 @@ end
 
 @inline _lit_for_value(vid::VarId, val::Bool) = VarLit(vid, !val)
 
+@inline _lit_sort_key(lit::VarLit) = (lit.vid, lit.neg)
+
+function _canonical_implication_key(antecedent::VarLit, consequent::VarLit)
+    key = (_lit_sort_key(antecedent), _lit_sort_key(consequent))
+    contra_key = (_lit_sort_key(negated(consequent)), _lit_sort_key(negated(antecedent)))
+    return isless(contra_key, key) ? contra_key : key
+end
+
+function _active_conjunction_pairs(conj::Union{BitMatrix, Nothing})
+    conj === nothing && return Tuple{Int, Int}[]
+
+    pairs = Tuple{Int, Int}[]
+    @inbounds for row in 1:(size(conj, 1) - 1)
+        for col in (row + 1):size(conj, 1)
+            conj[row, col] && push!(pairs, (row, col))
+        end
+    end
+    return pairs
+end
+
+function _two_term_satisfying_assignments(
+        con::XorConstraint,
+        parity_indices::Vector{Int},
+        conjunction_pairs::Vector{Tuple{Int, Int}},
+        involved_indices::Vector{Int},
+    )
+    index_to_position = Dict(idx => pos for (pos, idx) in enumerate(involved_indices))
+    assignments = BitVector[]
+    n = length(involved_indices)
+
+    for mask in 0:(2^n - 1)
+        assignment = falses(n)
+        @inbounds for pos in 1:n
+            assignment[pos] = ((mask >> (pos - 1)) & 1) == 1
+        end
+
+        value = false
+        for idx in parity_indices
+            value ⊻= assignment[index_to_position[idx]]
+        end
+        for (first_idx, second_idx) in conjunction_pairs
+            value ⊻= assignment[index_to_position[first_idx]] &
+                assignment[index_to_position[second_idx]]
+        end
+
+        value == con.rhs && push!(assignments, assignment)
+    end
+
+    return assignments
+end
+
+function _add_deduplicated_implication!(
+        manager::PropagationManager,
+        antecedent::VarLit,
+        consequent::VarLit,
+        seen_implications::Set{Tuple{Tuple{VarId, Bool}, Tuple{VarId, Bool}}},
+        stats_accumulator::Union{Nothing, _ParityStatsAccumulator},
+    )
+    antecedent == consequent && return manager
+
+    key = _canonical_implication_key(antecedent, consequent)
+    key in seen_implications && return manager
+    push!(seen_implications, key)
+    add_implication!(manager, antecedent, consequent, stats_accumulator)
+    return manager
+end
+
+function _register_two_term_xor_and_implications!(
+        manager::PropagationManager,
+        con::XorConstraint,
+        idx_to_vid,
+        stats_accumulator::Union{Nothing, _ParityStatsAccumulator} = nothing,
+    )
+    parity_indices = findall(con.par)
+    conjunction_pairs = _active_conjunction_pairs(con.conj)
+    length(parity_indices) + length(conjunction_pairs) == 2 || return false
+    isempty(conjunction_pairs) && return false
+
+    involved_indices = Int[]
+    append!(involved_indices, parity_indices)
+    for (first_idx, second_idx) in conjunction_pairs
+        push!(involved_indices, first_idx)
+        push!(involved_indices, second_idx)
+    end
+    sort!(unique!(involved_indices))
+
+    satisfying_assignments = _two_term_satisfying_assignments(
+        con,
+        parity_indices,
+        conjunction_pairs,
+        involved_indices,
+    )
+    isempty(satisfying_assignments) && return true
+
+    seen_implications = Set{Tuple{Tuple{VarId, Bool}, Tuple{VarId, Bool}}}()
+    for (antecedent_pos, antecedent_idx) in enumerate(involved_indices)
+        antecedent_vid = idx_to_vid[antecedent_idx]
+        for antecedent_value in (false, true)
+            matching_assignments = [
+                assignment for assignment in satisfying_assignments
+                if assignment[antecedent_pos] == antecedent_value
+            ]
+
+            if isempty(matching_assignments)
+                _add_deduplicated_implication!(
+                    manager,
+                    _lit_for_value(antecedent_vid, antecedent_value),
+                    _lit_for_value(antecedent_vid, !antecedent_value),
+                    seen_implications,
+                    stats_accumulator,
+                )
+                continue
+            end
+
+            for (consequent_pos, consequent_idx) in enumerate(involved_indices)
+                consequent_pos == antecedent_pos && continue
+
+                consequent_value = matching_assignments[1][consequent_pos]
+                all(
+                    assignment -> assignment[consequent_pos] == consequent_value,
+                    matching_assignments,
+                ) || continue
+
+                _add_deduplicated_implication!(
+                    manager,
+                    _lit_for_value(antecedent_vid, antecedent_value),
+                    _lit_for_value(idx_to_vid[consequent_idx], consequent_value),
+                    seen_implications,
+                    stats_accumulator,
+                )
+            end
+        end
+    end
+
+    return true
+end
+
 """
     _triangle_column_matches(conj, col, neighbor1, neighbor2)
 
@@ -892,8 +1029,15 @@ function register_implications!(
     con.meta.requires_prop || return nothing
     con.meta.requires_update && update!(con)
 
+    handled_two_term_xor_and = _register_two_term_xor_and_implications!(
+        manager,
+        con,
+        idx_to_vid,
+        stats_accumulator,
+    )
+
     # Case 1: Pure XOR
-    if con.meta.nnz_conj == 0 && con.meta.nnz_par > 0
+    if !handled_two_term_xor_and && con.meta.nnz_conj == 0 && con.meta.nnz_par > 0
 
         # Case 1.1: singleton parity
         if con.meta.nnz_par == 1
@@ -913,7 +1057,7 @@ function register_implications!(
     end
 
     # Case 2: Pure conjunction
-    if con.meta.nnz_conj > 0 && con.meta.nnz_par == 0
+    if !handled_two_term_xor_and && con.meta.nnz_conj > 0 && con.meta.nnz_par == 0
         conj = con.conj::BitMatrix
 
         # Case 2.1: singleton conjunction term

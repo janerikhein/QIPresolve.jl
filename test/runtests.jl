@@ -15,5 +15,6 @@ using Test
     include("xor_model_tests.jl")
     include("presolve_parity_tests.jl")
     include("parity_stats_tests.jl")
+    include("residue_stats_tests.jl")
     include("presolve_tests.jl")
 end

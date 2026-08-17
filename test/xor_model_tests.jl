@@ -492,6 +492,29 @@ end
     @test all(!con.meta.requires_prop for con in model.cons)
 end
 
+@testset "propagate! applies implications from mixed two-term rows" begin
+    pos_to_var, var_to_pos = parity_identity_maps(3)
+    mixed_row = PC.XorConstraint(
+        BitVector([0, 0, 1]),
+        parity_symmetric_bitmatrix(3, [(1, 2)]),
+        false,
+    )
+    fix_row = PC.XorConstraint(BitVector([0, 0, 1]), true)
+
+    model = PC.ParityModel(var_to_pos, pos_to_var, [mixed_row, fix_row])
+    manager = PC.PropagationManager(model.pos_to_var_id)
+
+    out = PC.propagate!(model, manager)
+
+    @test out === model
+    @test !model.infeasible
+    @test PC.fixed_value(manager, 1) == true
+    @test PC.fixed_value(manager, 2) == true
+    @test PC.fixed_value(manager, 3) == true
+    @test isempty(model.cons)
+    @test isempty(model.pivots)
+end
+
 @testset "propagate! re-enqueues fixings across passes when substitutions create fresh occurrences" begin
     pos_to_var, var_to_pos = parity_identity_maps(3)
     fix_row = PC.XorConstraint(BitVector([1, 0, 0]), false)

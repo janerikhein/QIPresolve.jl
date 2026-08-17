@@ -7,21 +7,85 @@ Return value for the combined presolve entry point.
 - `model`: The mutated presolved model.
 - `postsolver`: Reconstruction data for mapping reduced solutions back to the
   original variable space.
+- `parity_stats`: Aggregate statistics from parity presolve.
+- `residue_stats`: Aggregate statistics from residue presolve.
 """
 struct PresolveResult
     model::QPModel
     postsolver::ParityPostsolver
     parity_stats::ParityStats
+    residue_stats::ResidueStats
 end
 
 PresolveResult(model::QPModel, postsolver::ParityPostsolver) =
-    PresolveResult(model, postsolver, ParityStats())
+    PresolveResult(model, postsolver, ParityStats(), ResidueStats())
+
+PresolveResult(model::QPModel, postsolver::ParityPostsolver, parity_stats::ParityStats) =
+    PresolveResult(model, postsolver, parity_stats, ResidueStats())
 
 function _residue_presolve_pass!(
         model::QPModel,
         moduli::AbstractVector{<:Integer},
         candidate_con_ids::Union{Nothing, Set{Int}},
         postsolver::Union{Nothing, ParityPostsolver} = nothing;
+        treewidth_threshold::Integer,
+    )
+    return _residue_presolve_pass!(
+        model,
+        moduli,
+        candidate_con_ids,
+        postsolver,
+        _ResidueStatsAccumulator();
+        treewidth_threshold = treewidth_threshold,
+    )
+end
+
+function _residue_presolve_pass!(
+        model::QPModel,
+        moduli::AbstractVector{<:Integer},
+        candidate_con_ids::Union{Nothing, Set{Int}},
+        stats_accumulator::_ResidueStatsAccumulator;
+        treewidth_threshold::Integer,
+    )
+    return _residue_presolve_pass!(
+        model,
+        moduli,
+        candidate_con_ids,
+        nothing,
+        stats_accumulator;
+        treewidth_threshold = treewidth_threshold,
+    )
+end
+
+function _residue_presolve_pass!(
+        model::QPModel,
+        moduli::AbstractVector{<:Integer},
+        candidate_con_ids::Union{Nothing, Set{Int}},
+        postsolver::Union{Nothing, ParityPostsolver},
+        stats_accumulator::_ResidueStatsAccumulator;
+        treewidth_threshold::Integer,
+    )
+    start_time = time()
+    try
+        return _residue_presolve_pass_impl!(
+            model,
+            moduli,
+            candidate_con_ids,
+            postsolver,
+            stats_accumulator;
+            treewidth_threshold = treewidth_threshold,
+        )
+    finally
+        stats_accumulator.stats.residue_presolve_time += time() - start_time
+    end
+end
+
+function _residue_presolve_pass_impl!(
+        model::QPModel,
+        moduli::AbstractVector{<:Integer},
+        candidate_con_ids::Union{Nothing, Set{Int}},
+        postsolver::Union{Nothing, ParityPostsolver},
+        stats_accumulator::_ResidueStatsAccumulator;
         treewidth_threshold::Integer,
     )
     changed = false
@@ -35,6 +99,7 @@ function _residue_presolve_pass!(
         processed = 0,
         processed_constraint_ids = processed_constraint_ids,
         infeasible = model.infeasible,
+        residue_stats = stats_accumulator.stats,
     )
 
     normalize!(model, postsolver)
@@ -44,6 +109,7 @@ function _residue_presolve_pass!(
         processed = 0,
         processed_constraint_ids = processed_constraint_ids,
         infeasible = true,
+        residue_stats = stats_accumulator.stats,
     )
 
     isempty(moduli) && return (
@@ -52,15 +118,17 @@ function _residue_presolve_pass!(
         processed = 0,
         processed_constraint_ids = processed_constraint_ids,
         infeasible = false,
+        residue_stats = stats_accumulator.stats,
     )
 
     for con in model.cons
         candidate_con_ids === nothing || con.id in candidate_con_ids || continue
 
-        stats = residue_presolve_constraint!(
+        stats = _residue_presolve_constraint_impl!(
             model,
             con,
-            moduli;
+            moduli,
+            stats_accumulator;
             treewidth_threshold = treewidth_threshold,
         )
 
@@ -80,6 +148,7 @@ function _residue_presolve_pass!(
         processed = processed,
         processed_constraint_ids = processed_constraint_ids,
         infeasible = model.infeasible,
+        residue_stats = stats_accumulator.stats,
     )
 end
 
@@ -101,22 +170,39 @@ function presolve!(
     )::PresolveResult
     postsolver = ParityPostsolver(keys(model.vars))
     parity_stats_accumulator = _ParityStatsAccumulator()
+    residue_stats_accumulator = _ResidueStatsAccumulator()
     moduli = _generate_residue_moduli(residue_strategy, residue_threshold)
-    model.infeasible && return PresolveResult(model, postsolver)
+    model.infeasible && return PresolveResult(
+        model,
+        postsolver,
+        parity_stats_accumulator.stats,
+        residue_stats_accumulator.stats,
+    )
 
     normalize!(model, postsolver)
-    model.infeasible && return PresolveResult(model, postsolver)
+    model.infeasible && return PresolveResult(
+        model,
+        postsolver,
+        parity_stats_accumulator.stats,
+        residue_stats_accumulator.stats,
+    )
 
     propagator = PropagationManager(VarId[])
 
     parity_presolve!(model, propagator, postsolver, parity_stats_accumulator)
-    model.infeasible && return PresolveResult(model, postsolver, parity_stats_accumulator.stats)
+    model.infeasible && return PresolveResult(
+        model,
+        postsolver,
+        parity_stats_accumulator.stats,
+        residue_stats_accumulator.stats,
+    )
 
     residue_stats = _residue_presolve_pass!(
         model,
         moduli,
         nothing,
-        postsolver;
+        postsolver,
+        residue_stats_accumulator;
         treewidth_threshold = treewidth_threshold,
     )
 
@@ -129,10 +215,16 @@ function presolve!(
             model,
             moduli,
             parity_stats.coefficient_changed_constraint_ids,
-            postsolver;
+            postsolver,
+            residue_stats_accumulator;
             treewidth_threshold = treewidth_threshold,
         )
     end
 
-    return PresolveResult(model, postsolver, parity_stats_accumulator.stats)
+    return PresolveResult(
+        model,
+        postsolver,
+        parity_stats_accumulator.stats,
+        residue_stats_accumulator.stats,
+    )
 end

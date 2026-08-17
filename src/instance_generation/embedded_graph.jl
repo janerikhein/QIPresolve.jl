@@ -158,6 +158,19 @@ end
 
 
 """
+    validate_inexact_alpha(alpha) -> Float64
+
+Validate the relative distance tolerance used by inexact embedding models.
+"""
+function validate_inexact_alpha(alpha::Real)::Float64
+    alpha_float = Float64(alpha)
+    isfinite(alpha_float) || throw(ArgumentError("alpha must be finite, got $alpha"))
+    alpha_float >= 0.0 || throw(ArgumentError("alpha must be >= 0, got $alpha"))
+    return alpha_float
+end
+
+
+"""
     select_anchor_vertices(rng, n, num_anchors) -> Vector{Int}
 
 Select a reproducible random subset of distinct anchor vertices.
@@ -366,18 +379,24 @@ end
 
 
 """
-    build_embedding_model(emb_graph, anchors=Int[])
+    build_embedding_model(emb_graph, anchors=Int[]; alpha=0.0)
 
 Build a JuMP model for an integer graph embedding. Anchor vertices are fixed at
 their generated coordinates. With zero anchors, the graph-center symmetry
 breaking used by the original generator is retained.
+
+When `alpha > 0`, each edge distance equality `f(x) == c` is relaxed to the
+bounded inequality `(1 - alpha)c <= f(x) <= (1 + alpha)c`.
 """
 function build_embedding_model(
-        emb_graph::EmbeddedGraph, anchors::AbstractVector{Int} = Int[]
+        emb_graph::EmbeddedGraph, anchors::AbstractVector{Int} = Int[];
+        alpha::Real = 0.0
     )
+    alpha_float = validate_inexact_alpha(alpha)
     vertices, edge_indices, squared_lengths = get_model_params(emb_graph)
     reference_vertices, reference_coords, distances = embedding_references(emb_graph, anchors)
-    x_lower, x_upper, y_lower, y_upper = merged_coordinate_bounds(reference_coords, distances)
+    bound_distances = alpha_float == 0.0 ? distances : sqrt(1.0 + alpha_float) .* distances
+    x_lower, x_upper, y_lower, y_upper = merged_coordinate_bounds(reference_coords, bound_distances)
     model = Model()
 
     @variable(model, x[i in vertices], Int, lower_bound = x_lower[i], upper_bound = x_upper[i])
@@ -385,14 +404,26 @@ function build_embedding_model(
     @objective(model, Min, 0)
 
     for (i, j) in edge_indices
-        @constraint(model, (x[i] - x[j])^2 + (y[i] - y[j])^2 == squared_lengths[(i, j)])
+        squared_length = Float64(squared_lengths[(i, j)])
+        distance_expr = (x[i] - x[j])^2 + (y[i] - y[j])^2
+        if alpha_float == 0.0
+            @constraint(model, distance_expr == squared_length)
+        else
+            @constraint(
+                model,
+                (1.0 - alpha_float) * squared_length <= distance_expr <=
+                    (1.0 + alpha_float) * squared_length
+            )
+        end
     end
 
     for (row, reference) in enumerate(reference_vertices)
         point = reference_coords[row]
         for vertex in vertices
             vertex == reference && continue
-            radius_squared = round(Int, distances[row, vertex]^2)
+            radius_squared = alpha_float == 0.0 ?
+                round(Int, distances[row, vertex]^2) :
+                bound_distances[row, vertex]^2
             @constraint(
                 model,
                 (x[vertex] - point.x)^2 + (y[vertex] - point.y)^2 <= radius_squared

@@ -25,6 +25,7 @@ include("residue/interaction_graph.jl")
 include("residue/tree_decomposition.jl")
 include("parity/xor_constraint.jl")
 include("stats/parity_stats.jl")
+include("stats/residue_stats.jl")
 include("parity/propagation.jl")
 include("parity/parity_postsolve.jl")
 include("model/qp_model.jl")
@@ -45,6 +46,7 @@ export
     QPModel,
     ModelStats,
     ParityStats,
+    ResidueStats,
     InteractionGraph,
     InteractionComponent,
     LinSingleton,

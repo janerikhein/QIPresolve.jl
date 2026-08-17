@@ -845,14 +845,31 @@ function _residue_constraint_status(
     return :process
 end
 
+function _residue_constraint_result(
+        changed::Bool,
+        tightened_to_equality::Bool,
+        processed::Bool,
+        infeasible::Bool,
+        stats_accumulator::_ResidueStatsAccumulator,
+    )
+    return (
+        changed = changed,
+        tightened_to_equality = tightened_to_equality,
+        processed = processed,
+        infeasible = infeasible,
+        residue_stats = stats_accumulator.stats,
+    )
+end
+
 """
     residue_presolve_constraint!(model, con, moduli; treewidth_threshold=typemax(Int))
+    residue_presolve_constraint!(model, con, moduli, stats_accumulator; treewidth_threshold=typemax(Int))
 
 Run residue-based bound tightening on a single constraint of `model`.
 
 # Returns
 - A named tuple with `changed`, `tightened_to_equality`, `processed`, and
-  `infeasible` fields.
+  `infeasible` fields, plus accumulated `residue_stats`.
 
 # Side Effects
 - May tighten `con.lhs` or `con.rhs`.
@@ -864,35 +881,84 @@ function residue_presolve_constraint!(
         moduli::AbstractVector{<:Integer};
         treewidth_threshold::Integer = typemax(Int),
     )
-    model.infeasible && return (
-        changed = false,
-        tightened_to_equality = false,
-        processed = false,
-        infeasible = true,
+    stats_accumulator = _ResidueStatsAccumulator()
+    return residue_presolve_constraint!(
+        model,
+        con,
+        moduli,
+        stats_accumulator;
+        treewidth_threshold = treewidth_threshold,
+    )
+end
+
+function residue_presolve_constraint!(
+        model::QPModel,
+        con::Constraint,
+        moduli::AbstractVector{<:Integer},
+        stats_accumulator::_ResidueStatsAccumulator;
+        treewidth_threshold::Integer = typemax(Int),
+    )
+    start_time = time()
+    try
+        return _residue_presolve_constraint_impl!(
+            model,
+            con,
+            moduli,
+            stats_accumulator;
+            treewidth_threshold = treewidth_threshold,
+        )
+    finally
+        stats_accumulator.stats.residue_presolve_time += time() - start_time
+    end
+end
+
+function _residue_presolve_constraint_impl!(
+        model::QPModel,
+        con::Constraint,
+        moduli::AbstractVector{<:Integer},
+        stats_accumulator::_ResidueStatsAccumulator;
+        treewidth_threshold::Integer,
+    )
+    model.infeasible && return _residue_constraint_result(
+        false,
+        false,
+        false,
+        true,
+        stats_accumulator,
     )
 
     was_inequality = !is_equality(con)
     status = _residue_constraint_status(con, model.vars)
     if status == :infeasible
         model.infeasible = true
-        return (
-            changed = false,
-            tightened_to_equality = false,
-            processed = false,
-            infeasible = true,
+        return _residue_constraint_result(
+            false,
+            false,
+            false,
+            true,
+            stats_accumulator,
         )
     elseif status == :skip
-        return (
-            changed = false,
-            tightened_to_equality = false,
-            processed = false,
-            infeasible = false,
+        return _residue_constraint_result(
+            false,
+            false,
+            false,
+            false,
+            stats_accumulator,
         )
     end
+    isempty(moduli) && return _residue_constraint_result(
+        false,
+        false,
+        false,
+        false,
+        stats_accumulator,
+    )
 
     standardized = _standardize_residue_constraint(con, model.vars, model.obj_expr)
     cache = _ResidueCacheEntry[]
     changed = false
+    processed = false
 
     for modulus_value in moduli
         modulus = Int(modulus_value)
@@ -902,26 +968,47 @@ function residue_presolve_constraint!(
             standardized.var_bounds;
             treewidth_threshold = treewidth_threshold,
         )
+        _record_residue_modulus_evaluated!(stats_accumulator, con)
+        processed = true
         result.saturated && continue
 
         push!(cache, _ResidueCacheEntry(modulus, result.residues))
-        changed = _reapply_residue_cache!(con, cache, standardized.constraint_shift) || changed
-        if con.lhs > con.rhs
+        old_lhs = con.lhs
+        old_rhs = con.rhs
+        was_equality_before_reapply = is_equality(con)
+        reapply_changed = _reapply_residue_cache!(con, cache, standardized.constraint_shift)
+        bounds_changed = con.lhs != old_lhs || con.rhs != old_rhs
+        bounds_changed && _record_residue_bound_tightening!(
+            stats_accumulator,
+            con,
+            old_lhs,
+            old_rhs,
+            was_equality_before_reapply,
+        )
+        residue_infeasible = con.lhs > con.rhs
+        (bounds_changed || residue_infeasible) &&
+            _record_useful_residue_modulus!(stats_accumulator)
+        changed = reapply_changed || bounds_changed || changed
+
+        if residue_infeasible
             model.infeasible = true
-            return (
-                changed = changed,
-                tightened_to_equality = false,
-                processed = true,
-                infeasible = true,
+            _record_residue_infeasibility!(stats_accumulator)
+            return _residue_constraint_result(
+                changed,
+                false,
+                processed,
+                true,
+                stats_accumulator,
             )
         end
     end
 
-    return (
-        changed = changed,
-        tightened_to_equality = changed && was_inequality && is_equality(con),
-        processed = true,
-        infeasible = false,
+    return _residue_constraint_result(
+        changed,
+        changed && was_inequality && is_equality(con),
+        processed,
+        false,
+        stats_accumulator,
     )
 end
 
@@ -941,20 +1028,11 @@ function residue_presolve!(
         treewidth_threshold::Integer = typemax(Int),
     )::QPModel
     moduli = _generate_residue_moduli(strategy, threshold)
-    model.infeasible && return model
-    normalize!(model)
-    model.infeasible && return model
-    isempty(moduli) && return model
-
-    for con in model.cons
-        residue_presolve_constraint!(
-            model,
-            con,
-            moduli;
-            treewidth_threshold = treewidth_threshold,
-        )
-        model.infeasible && return model
-    end
-
+    _residue_presolve_pass!(
+        model,
+        moduli,
+        nothing;
+        treewidth_threshold = treewidth_threshold,
+    )
     return model
 end

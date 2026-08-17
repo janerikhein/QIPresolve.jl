@@ -391,6 +391,7 @@ end
     manager = PC.PropagationManager(pos_to_var)
 
     PC.register_implications!(manager, con, pos_to_var)
+    @test ne(manager.graph) == 8
 
     PC.fix_var!(manager, 11, false)
     @test PC.pop_fixing!(manager) == (11, false)
@@ -414,6 +415,96 @@ end
     @test PC.fixed_value(reverse_manager, 11) == true
     @test PC.fixed_value(reverse_manager, 12) == true
     @test Set(drain_fixings!(reverse_manager)) == Set([(11, true), (12, true)])
+end
+
+@testset "register_implications! adds mixed two-term implications for rhs=false" begin
+    pos_to_var = [11, 12, 21]
+    con = PC.XorConstraint(
+        BitVector([0, 0, 1]),
+        propagation_edge_matrix(3, [(1, 2)]),
+        false,
+    )
+    manager = PC.PropagationManager(pos_to_var)
+
+    PC.register_implications!(manager, con, pos_to_var)
+    @test ne(manager.graph) == 4
+
+    PC.fix_var!(manager, 21, true)
+    @test PC.pop_fixing!(manager) == (21, true)
+    @test PC.update!(manager) === manager
+    @test PC.fixed_value(manager, 11) == true
+    @test PC.fixed_value(manager, 12) == true
+    @test Set(drain_fixings!(manager)) == Set([(11, true), (12, true)])
+
+    reverse_manager = PC.PropagationManager(pos_to_var)
+    PC.register_implications!(
+        reverse_manager,
+        PC.XorConstraint(
+            BitVector([0, 0, 1]),
+            propagation_edge_matrix(3, [(1, 2)]),
+            false,
+        ),
+        pos_to_var,
+    )
+
+    PC.fix_var!(reverse_manager, 11, false)
+    @test PC.pop_fixing!(reverse_manager) == (11, false)
+    @test PC.update!(reverse_manager) === reverse_manager
+    @test PC.fixed_value(reverse_manager, 21) == false
+    @test Set(drain_fixings!(reverse_manager)) == Set([(21, false)])
+end
+
+@testset "register_implications! adds mixed two-term implications for rhs=true" begin
+    pos_to_var = [11, 12, 21]
+    con = PC.XorConstraint(
+        BitVector([0, 0, 1]),
+        propagation_edge_matrix(3, [(1, 2)]),
+        true,
+    )
+    manager = PC.PropagationManager(pos_to_var)
+
+    PC.register_implications!(manager, con, pos_to_var)
+    @test ne(manager.graph) == 4
+
+    PC.fix_var!(manager, 11, false)
+    @test PC.pop_fixing!(manager) == (11, false)
+    @test PC.update!(manager) === manager
+    @test PC.fixed_value(manager, 21) == true
+    @test Set(drain_fixings!(manager)) == Set([(21, true)])
+
+    reverse_manager = PC.PropagationManager(pos_to_var)
+    PC.register_implications!(
+        reverse_manager,
+        PC.XorConstraint(
+            BitVector([0, 0, 1]),
+            propagation_edge_matrix(3, [(1, 2)]),
+            true,
+        ),
+        pos_to_var,
+    )
+
+    PC.fix_var!(reverse_manager, 21, false)
+    @test PC.pop_fixing!(reverse_manager) == (21, false)
+    @test PC.update!(reverse_manager) === reverse_manager
+    @test PC.fixed_value(reverse_manager, 11) == true
+    @test PC.fixed_value(reverse_manager, 12) == true
+    @test Set(drain_fixings!(reverse_manager)) == Set([(11, true), (12, true)])
+end
+
+@testset "register_implications! handles overlapping mixed two-term rows" begin
+    pos_to_var = [11, 12]
+    con = PC.XorConstraint(
+        BitVector([1, 0]),
+        propagation_edge_matrix(2, [(1, 2)]),
+        true,
+    )
+    manager = PC.PropagationManager(pos_to_var)
+
+    PC.register_implications!(manager, con, pos_to_var)
+    @test PC.update!(manager) === manager
+    @test PC.fixed_value(manager, 11) == true
+    @test PC.fixed_value(manager, 12) == false
+    @test (11, true) in Set(drain_fixings!(manager))
 end
 
 @testset "register_implications! adds triangle implications for rhs=true" begin

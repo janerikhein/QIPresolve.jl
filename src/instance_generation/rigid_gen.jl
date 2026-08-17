@@ -201,17 +201,20 @@ end
 
 
 """
-    generate_laman_instance(n; num_anchors=0, ...)
+    generate_laman_instance(n; num_anchors=0, alpha=0.0, ...)
 
 Generate a Laman graph embedding model and fix a seeded random subset of
-`num_anchors` vertices at their generated coordinates.
+`num_anchors` vertices at their generated coordinates. When `alpha > 0`, edge
+distance equalities are relaxed to relative intervals.
 """
 function generate_laman_instance(
         n::Int; R::Int = 10, pH2::Float64 = 0.5, seed::Int = 0,
         max_global_tries::Int = 10_000, max_tries_H1::Int = 200,
-        max_tries_H2::Int = 300, num_anchors::Int = 0
+        max_tries_H2::Int = 300, num_anchors::Int = 0,
+        alpha::Real = 0.0
     )
     validate_num_anchors(num_anchors, n)
+    alpha_float = validate_inexact_alpha(alpha)
     rng = rng_from_seed(seed)
     graph, coords = _random_laman_graph(
         rng, n;
@@ -222,7 +225,7 @@ function generate_laman_instance(
         max_tries_H2 = max_tries_H2,
     )
     anchors = select_anchor_vertices(rng, n, num_anchors)
-    return build_embedding_model(to_embedded(graph, coords), anchors)
+    return build_embedding_model(to_embedded(graph, coords), anchors; alpha = alpha_float)
 end
 
 
@@ -287,17 +290,19 @@ end
 
 
 """
-    generate_globally_rigid_instance(n; num_anchors=0, ...)
+    generate_globally_rigid_instance(n; num_anchors=0, alpha=0.0, ...)
 
 Generate a globally rigid graph embedding model and fix a seeded random subset
-of `num_anchors` vertices at their generated coordinates.
+of `num_anchors` vertices at their generated coordinates. When `alpha > 0`,
+edge distance equalities are relaxed to relative intervals.
 """
 function generate_globally_rigid_instance(
         n::Int; R::Int = 10, seed::Int = 0,
         max_global_tries::Int = 10_000, max_tries_H2::Int = 300,
-        num_anchors::Int = 0
+        num_anchors::Int = 0, alpha::Real = 0.0
     )
     validate_num_anchors(num_anchors, n)
+    alpha_float = validate_inexact_alpha(alpha)
     rng = rng_from_seed(seed)
     graph, coords = _random_globally_rigid_graph(
         rng, n;
@@ -306,5 +311,5 @@ function generate_globally_rigid_instance(
         max_tries_H2 = max_tries_H2,
     )
     anchors = select_anchor_vertices(rng, n, num_anchors)
-    return build_embedding_model(to_embedded(graph, coords), anchors)
+    return build_embedding_model(to_embedded(graph, coords), anchors; alpha = alpha_float)
 end

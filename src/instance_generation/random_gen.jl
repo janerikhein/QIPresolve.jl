@@ -93,17 +93,21 @@ end
 
 """
     generate_2_connected_instance(n; R=10, edge_density=0.5, seed=0,
-                                  max_coord_tries=10_000, num_anchors=0)
+                                  max_coord_tries=10_000, num_anchors=0,
+                                  alpha=0.0)
 
 Generate a 2-connected graph instance and return the corresponding embedding
 model as `(model, x, y)`. A seeded random subset of `num_anchors` vertices is
-fixed at its generated coordinates.
+fixed at its generated coordinates. When `alpha > 0`, edge distance equalities
+are relaxed to relative intervals.
 """
 function generate_2_connected_instance(
         n::Int; R::Int = 10, edge_density::Float64 = 0.5, seed::Int = 0,
-        max_coord_tries::Int = 10_000, num_anchors::Int = 0
+        max_coord_tries::Int = 10_000, num_anchors::Int = 0,
+        alpha::Real = 0.0
     )
     validate_num_anchors(num_anchors, n)
+    alpha_float = validate_inexact_alpha(alpha)
     rng = rng_from_seed(seed)
     g, coords = _random_2_connected_graph(
         rng, n;
@@ -112,5 +116,5 @@ function generate_2_connected_instance(
         max_coord_tries = max_coord_tries,
     )
     anchors = select_anchor_vertices(rng, n, num_anchors)
-    return build_embedding_model(to_embedded(g, coords), anchors)
+    return build_embedding_model(to_embedded(g, coords), anchors; alpha = alpha_float)
 end

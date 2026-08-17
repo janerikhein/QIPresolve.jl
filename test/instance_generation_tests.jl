@@ -10,6 +10,7 @@ using QIPresolve.InstanceGeneration:
     generate_2_connected_instance,
     generate_globally_rigid_instance,
     generate_laman_instance,
+    generate_likely_infeasible_embedding_instance,
     generate_random_qip_model,
     random_2_connected_graph,
     random_globally_rigid_graph,
@@ -117,12 +118,61 @@ model_bounds(x, y) = [
     for i in eachindex(x)
 ]
 
+quad_interval_bounds(model) = sort([
+    (
+        JuMP.constraint_object(constraint).set.lower,
+        JuMP.constraint_object(constraint).set.upper,
+    )
+    for constraint in JuMP.all_constraints(model, JuMP.QuadExpr, MOI.Interval{Float64})
+])
+
+function affine_equalities_signature(model)
+    rows = Tuple{Float64, Float64, Vector{Tuple{String, Float64}}}[]
+    for constraint in JuMP.all_constraints(model, JuMP.AffExpr, MOI.EqualTo{Float64})
+        object = JuMP.constraint_object(constraint)
+        terms = sort([
+            (JuMP.name(variable), coefficient)
+            for (variable, coefficient) in object.func.terms
+        ])
+        push!(rows, (object.set.value, object.func.constant, terms))
+    end
+    return sort(rows; by = repr)
+end
+
+function expected_bounding_box_bounds(embedded, anchors, base_bounds, box_scale)
+    center = IG.graph_center(IG.pw_shortest_paths(embedded.graph))
+    center_point = embedded.coords[center]
+    coords = isempty(anchors) ?
+        [IG.IPoint(point.x - center_point.x, point.y - center_point.y) for point in embedded.coords] :
+        embedded.coords
+    box_center = coords[center]
+    x_min = minimum(point.x for point in coords)
+    x_max = maximum(point.x for point in coords)
+    y_min = minimum(point.y for point in coords)
+    y_max = maximum(point.y for point in coords)
+    x_lower = ceil(Int, box_center.x + box_scale * (x_min - box_center.x))
+    x_upper = floor(Int, box_center.x + box_scale * (x_max - box_center.x))
+    y_lower = ceil(Int, box_center.y + box_scale * (y_min - box_center.y))
+    y_upper = floor(Int, box_center.y + box_scale * (y_max - box_center.y))
+
+    return [
+        (
+            max(lower_x, x_lower),
+            min(upper_x, x_upper),
+            max(lower_y, y_lower),
+            min(upper_y, y_upper),
+        )
+        for (lower_x, upper_x, lower_y, upper_y) in base_bounds
+    ]
+end
+
 
 @testset "graph instance public API" begin
     exported_names = names(IG)
     @test :generate_2_connected_instance in exported_names
     @test :generate_laman_instance in exported_names
     @test :generate_globally_rigid_instance in exported_names
+    @test :generate_likely_infeasible_embedding_instance in exported_names
 
     for helper in (
             :random_2_connected_graph,
@@ -204,6 +254,7 @@ end
         (-4.0, 4.0, -4.0, 4.0),
     ]
     @test JuMP.num_constraints(model_0, JuMP.QuadExpr, MOI.EqualTo{Float64}) == 6
+    @test JuMP.num_constraints(model_0, JuMP.QuadExpr, MOI.Interval{Float64}) == 0
     @test JuMP.num_constraints(model_0, JuMP.QuadExpr, MOI.LessThan{Float64}) == 3
     @test JuMP.num_constraints(model_0, JuMP.AffExpr, MOI.EqualTo{Float64}) == 2
     @test JuMP.num_constraints(model_0, JuMP.AffExpr, MOI.LessThan{Float64}) == 1
@@ -251,9 +302,45 @@ end
     @test JuMP.num_constraints(model_2, JuMP.AffExpr, MOI.LessThan{Float64}) == 0
     @test JuMP.num_constraints(model_2, JuMP.AffExpr, MOI.GreaterThan{Float64}) == 0
 
+    alpha = 0.2
+    model_inexact, _, _ = IG.build_embedding_model(embedded, [2]; alpha = alpha)
+    @test JuMP.num_constraints(model_inexact, JuMP.QuadExpr, MOI.EqualTo{Float64}) == 0
+    @test JuMP.num_constraints(model_inexact, JuMP.QuadExpr, MOI.Interval{Float64}) == 6
+    @test JuMP.num_constraints(model_inexact, JuMP.QuadExpr, MOI.LessThan{Float64}) == 3
+    @test JuMP.num_constraints(model_inexact, JuMP.AffExpr, MOI.EqualTo{Float64}) == 2
+    @test JuMP.num_constraints(model_inexact, JuMP.AffExpr, MOI.LessThan{Float64}) == 1
+    @test JuMP.num_constraints(model_inexact, JuMP.AffExpr, MOI.GreaterThan{Float64}) == 2
+
+    squared_edge_lengths = sort(Float64[9, 16, 16, 17, 25, 32])
+    expected_intervals = [
+        ((1.0 - alpha) * c, (1.0 + alpha) * c)
+        for c in squared_edge_lengths
+    ]
+    actual_intervals = quad_interval_bounds(model_inexact)
+    @test first.(actual_intervals) ≈ first.(expected_intervals)
+    @test last.(actual_intervals) ≈ last.(expected_intervals)
+
+    anchor_upper_bounds = sort([
+        JuMP.constraint_object(constraint).set.upper
+        for constraint in JuMP.all_constraints(model_inexact, JuMP.QuadExpr, MOI.LessThan{Float64})
+    ])
+    anchor_offset = coords[2].x^2 + coords[2].y^2
+    @test anchor_upper_bounds ≈ sort((1.0 + alpha) .* Float64[9, 17, 25] .- anchor_offset)
+
+    _, x_wide, y_wide = IG.build_embedding_model(embedded, [2]; alpha = 1.0)
+    @test model_bounds(x_wide, y_wide) == [
+        (1.0, 9.0, -1.0, 7.0),
+        (5.0, 5.0, 3.0, 3.0),
+        (-2.0, 12.0, -4.0, 10.0),
+        (0.0, 10.0, -2.0, 8.0),
+    ]
+
     @test_throws ArgumentError IG.build_embedding_model(embedded, [0])
     @test_throws ArgumentError IG.build_embedding_model(embedded, [1, 1])
     @test_throws ArgumentError IG.build_embedding_model(embedded, [5])
+    @test_throws ArgumentError IG.build_embedding_model(embedded; alpha = -0.1)
+    @test_throws ArgumentError IG.build_embedding_model(embedded; alpha = Inf)
+    @test_throws ArgumentError IG.build_embedding_model(embedded; alpha = NaN)
 end
 
 
@@ -277,6 +364,14 @@ end
         _, x_1, y_1 = generator(6; R = 8, seed = 91, num_anchors = 2)
         _, x_2, y_2 = generator(6; R = 8, seed = 91, num_anchors = 2)
         @test model_bounds(x_1, y_1) == model_bounds(x_2, y_2)
+
+        inexact_model, _, _ = generator(6; R = 8, seed = 29, num_anchors = 1, alpha = 0.2)
+        @test JuMP.num_constraints(inexact_model, JuMP.QuadExpr, MOI.Interval{Float64}) > 0
+        @test JuMP.num_constraints(inexact_model, JuMP.QuadExpr, MOI.EqualTo{Float64}) == 0
+
+        @test_throws ArgumentError generator(6; alpha = -0.1)
+        @test_throws ArgumentError generator(6; alpha = Inf)
+        @test_throws ArgumentError generator(6; alpha = NaN)
     end
 end
 
@@ -327,6 +422,144 @@ end
     @test length(x) == 7
     @test length(y) == 7
     @test model !== nothing
+end
+
+@testset "likely infeasible graph embedding generator" begin
+    @test_throws ArgumentError generate_likely_infeasible_embedding_instance(
+        6; strategy = :unknown, R = 8
+    )
+    @test_throws ArgumentError generate_likely_infeasible_embedding_instance(
+        6; base = :unknown, R = 8
+    )
+    @test_throws ArgumentError generate_likely_infeasible_embedding_instance(
+        6; box_scale = -0.1, R = 8
+    )
+    @test_throws ArgumentError generate_likely_infeasible_embedding_instance(
+        6; box_scale = 1.1, R = 8
+    )
+    @test_throws ArgumentError generate_likely_infeasible_embedding_instance(
+        6; box_scale = Inf, R = 8
+    )
+    @test_throws ArgumentError generate_likely_infeasible_embedding_instance(
+        6; strategy = :vertex_contraction, contraction_vertices = (1, 1), R = 8
+    )
+    @test_throws ArgumentError generate_likely_infeasible_embedding_instance(
+        6; strategy = :vertex_contraction, contraction_vertices = (0, 2), R = 8
+    )
+    @test_throws ArgumentError generate_likely_infeasible_embedding_instance(
+        6; strategy = :vertex_contraction, contraction_vertices = [1, 2], R = 8
+    )
+    @test_throws ArgumentError generate_likely_infeasible_embedding_instance(
+        6;
+        strategy = :vertex_contraction,
+        base = :random_2_connected,
+        edge_density = 0.0,
+        contraction_vertices = (1, 3),
+        R = 8,
+    )
+
+    n = 6
+    R = 8
+    seed = 19
+    box_scale = 0.5
+    rng = IG.rng_from_seed(seed)
+    graph, coords = IG._random_globally_rigid_graph(rng, n; R = R)
+    embedded = IG.to_embedded(graph, coords)
+    _, base_x, base_y = IG.build_embedding_model(embedded)
+    expected_bounds = expected_bounding_box_bounds(embedded, Int[], model_bounds(base_x, base_y), box_scale)
+
+    bounded_model, bounded_x, bounded_y = generate_likely_infeasible_embedding_instance(
+        n; R = R, seed = seed, box_scale = box_scale
+    )
+    @test model_bounds(bounded_x, bounded_y) == expected_bounds
+    @test JuMP.num_constraints(bounded_model, JuMP.QuadExpr, MOI.EqualTo{Float64}) == ne(graph)
+    @test any(
+        result[1] > base[1] || result[2] < base[2] ||
+            result[3] > base[3] || result[4] < base[4]
+        for (result, base) in zip(
+            model_bounds(bounded_x, bounded_y),
+            model_bounds(base_x, base_y),
+        )
+    )
+
+    bounded_model_1, bounded_x_1, bounded_y_1 = generate_likely_infeasible_embedding_instance(
+        n; R = R, seed = 37, box_scale = 0.6
+    )
+    bounded_model_2, bounded_x_2, bounded_y_2 = generate_likely_infeasible_embedding_instance(
+        n; R = R, seed = 37, box_scale = 0.6
+    )
+    @test model_bounds(bounded_x_1, bounded_y_1) == model_bounds(bounded_x_2, bounded_y_2)
+    @test affine_equalities_signature(bounded_model_1) == affine_equalities_signature(bounded_model_2)
+
+    alias_model, alias_x, alias_y = generate_likely_infeasible_embedding_instance(
+        n; base = :two_connected, R = R, edge_density = 0.4, seed = 11
+    )
+    @test alias_model !== nothing
+    @test length(alias_x) == n
+    @test length(alias_y) == n
+
+    contraction_base, _, _ = generate_2_connected_instance(
+        n; R = R, edge_density = 0.0, seed = 23
+    )
+    contraction_model, contraction_x, contraction_y =
+        generate_likely_infeasible_embedding_instance(
+            n;
+            strategy = :vertex_contraction,
+            base = :random_2_connected,
+            edge_density = 0.0,
+            R = R,
+            seed = 23,
+            contraction_vertices = (1, 4),
+        )
+    @test length(contraction_x) == n
+    @test length(contraction_y) == n
+    @test JuMP.num_constraints(contraction_model, JuMP.QuadExpr, MOI.EqualTo{Float64}) ==
+        JuMP.num_constraints(contraction_base, JuMP.QuadExpr, MOI.EqualTo{Float64})
+    @test JuMP.num_constraints(contraction_model, JuMP.AffExpr, MOI.EqualTo{Float64}) ==
+        JuMP.num_constraints(contraction_base, JuMP.AffExpr, MOI.EqualTo{Float64}) + 2
+    @test (0.0, 0.0, [("x[1]", 1.0), ("x[4]", -1.0)]) in
+        affine_equalities_signature(contraction_model)
+    @test (0.0, 0.0, [("y[1]", 1.0), ("y[4]", -1.0)]) in
+        affine_equalities_signature(contraction_model)
+
+    contraction_model_1, contraction_x_1, contraction_y_1 =
+        generate_likely_infeasible_embedding_instance(
+            n; strategy = :contraction, base = :random_2_connected,
+            R = R, edge_density = 0.25, seed = 41
+        )
+    contraction_model_2, contraction_x_2, contraction_y_2 =
+        generate_likely_infeasible_embedding_instance(
+            n; strategy = :contraction, base = :random_2_connected,
+            R = R, edge_density = 0.25, seed = 41
+        )
+    @test model_bounds(contraction_x_1, contraction_y_1) ==
+        model_bounds(contraction_x_2, contraction_y_2)
+    @test affine_equalities_signature(contraction_model_1) ==
+        affine_equalities_signature(contraction_model_2)
+
+    path = path_graph(4)
+    square_coords = IG.IPoint[
+        IG.IPoint(0, 0),
+        IG.IPoint(1, 0),
+        IG.IPoint(2, 0),
+        IG.IPoint(3, 0),
+    ]
+    @test IG._contraction_candidates(path, square_coords; require_nonadjacent = true) == [(1, 4)]
+    @test IG._select_contraction_vertices(IG.rng_from_seed(3), path, square_coords) == (1, 4)
+
+    cycle = cycle_graph(4)
+    square_coords = IG.IPoint[
+        IG.IPoint(0, 0),
+        IG.IPoint(1, 0),
+        IG.IPoint(1, 1),
+        IG.IPoint(0, 1),
+    ]
+    selected = IG._select_contraction_vertices(IG.rng_from_seed(3), cycle, square_coords)
+    @test has_edge(cycle, selected...)
+    @test !IG._has_common_neighbor(cycle, selected...)
+    @test isempty(IG._contraction_candidates(cycle, square_coords; require_nonadjacent = true))
+    @test Set(IG._contraction_candidates(cycle, square_coords; require_nonadjacent = false)) ==
+        Set([(1, 2), (1, 4), (2, 3), (3, 4)])
 end
 
 @testset "generate_random_qip_model validation" begin
