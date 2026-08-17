@@ -11,7 +11,11 @@ Return value for the combined presolve entry point.
 struct PresolveResult
     model::QPModel
     postsolver::ParityPostsolver
+    parity_stats::ParityStats
 end
+
+PresolveResult(model::QPModel, postsolver::ParityPostsolver) =
+    PresolveResult(model, postsolver, ParityStats())
 
 function _residue_presolve_pass!(
         model::QPModel,
@@ -96,6 +100,7 @@ function presolve!(
         treewidth_threshold::Integer = DEFAULT_PRESOLVE_TREEWIDTH_THRESHOLD,
     )::PresolveResult
     postsolver = ParityPostsolver(keys(model.vars))
+    parity_stats_accumulator = _ParityStatsAccumulator()
     moduli = _generate_residue_moduli(residue_strategy, residue_threshold)
     model.infeasible && return PresolveResult(model, postsolver)
 
@@ -104,8 +109,8 @@ function presolve!(
 
     propagator = PropagationManager(VarId[])
 
-    parity_presolve!(model, propagator, postsolver)
-    model.infeasible && return PresolveResult(model, postsolver)
+    parity_presolve!(model, propagator, postsolver, parity_stats_accumulator)
+    model.infeasible && return PresolveResult(model, postsolver, parity_stats_accumulator.stats)
 
     residue_stats = _residue_presolve_pass!(
         model,
@@ -116,7 +121,7 @@ function presolve!(
     )
 
     while !model.infeasible && residue_stats.tightened_to_equality
-        parity_stats = parity_presolve!(model, propagator, postsolver)
+        parity_stats = parity_presolve!(model, propagator, postsolver, parity_stats_accumulator)
         model.infeasible && break
         parity_stats.domains_changed || break
 
@@ -129,5 +134,5 @@ function presolve!(
         )
     end
 
-    return PresolveResult(model, postsolver)
+    return PresolveResult(model, postsolver, parity_stats_accumulator.stats)
 end

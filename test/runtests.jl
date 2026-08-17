@@ -14,5 +14,6 @@ using Test
     include("xor_constraint_tests.jl")
     include("xor_model_tests.jl")
     include("presolve_parity_tests.jl")
+    include("parity_stats_tests.jl")
     include("presolve_tests.jl")
 end

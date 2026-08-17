@@ -146,6 +146,7 @@ function fix_parities!(
     model::QPModel,
     propagator::PropagationManager,
     postsolver::Union{Nothing, ParityPostsolver},
+    stats_accumulator::Union{Nothing, _ParityStatsAccumulator} = nothing,
 )
     nfixed = 0
 
@@ -166,6 +167,7 @@ function fix_parities!(
         postsolver !== nothing && append_fixed_bit!(postsolver, lit.vid, val)
         affine_transform!(model, lit.vid, 2.0, offset)
         set_var_bounds!(model, lit.vid, new_lb, new_ub)
+        _record_fixed_parity_substitution!(stats_accumulator)
         nfixed += 1
     end
 
@@ -222,6 +224,7 @@ function fix_parity_patterns!(
     model::QPModel,
     propagator::ParityPropagator,
     postsolver::Union{Nothing, ParityPostsolver},
+    stats_accumulator::Union{Nothing, _ParityStatsAccumulator} = nothing,
 )
     candidate_vids = VarId[]
 
@@ -309,6 +312,7 @@ function fix_parity_patterns!(
             nrewritten += 1
         end
 
+        _record_pattern_substitution!(stats_accumulator, length(component_lits), length(component_lits))
         substitute_scc_by_new_var!(propagator, scc_vid, b_scc)
     end
 
