@@ -9,7 +9,8 @@ Usage:
 Submits one SLURM job per top-level *.lp instance. Stats JSON files are written
 to STATS_DIR as <instance>_stats.json.
 
-Do not pass --output or --out-dir; this wrapper sets --output per instance.
+Do not pass --output, --out-dir, or --time-limit. This wrapper sets --output
+per instance, and SCIP time limits should come from --scip-config.
 
 Cluster defaults can be overridden with:
   QIP_SBATCH_PARTITION       default: opt_int
@@ -32,8 +33,8 @@ script_args=("$@")
 
 for arg in "${script_args[@]}"; do
     case "$arg" in
-        --output|--output=*|--out-dir|--out-dir=*)
-            echo "error: do not pass $arg; run_experiments.sh sets the output path per instance" >&2
+        --output|--output=*|--out-dir|--out-dir=*|--time-limit|--time-limit=*)
+            echo "error: do not pass $arg; use --scip-config for SCIP time limits, and let run_experiments.sh set per-instance output paths" >&2
             exit 2
             ;;
     esac

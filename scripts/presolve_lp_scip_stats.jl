@@ -72,7 +72,6 @@ Base.@kwdef struct CliConfig
     scip_config::Union{Nothing, String} = nothing
     output_path::Union{Nothing, String} = nothing
     out_dir::Union{Nothing, String} = nothing
-    time_limit_sec::Union{Nothing, Float64} = nothing
     residue_strategy::Symbol = QIP.PresolveConfig.DEFAULT_PRESOLVE_RESIDUE_STRATEGY
     residue_threshold::Int = QIP.PresolveConfig.DEFAULT_PRESOLVE_RESIDUE_THRESHOLD
     treewidth_threshold::Int = QIP.PresolveConfig.DEFAULT_PRESOLVE_TREEWIDTH_THRESHOLD
@@ -89,7 +88,6 @@ function usage()
       --scip-config file.set       SCIP parameter file applied to both SCIP runs
       --output path                Explicit JSON output path
       --out-dir dir                Directory for the default <instance>_stats.json
-      --time-limit sec             SCIP time limit in seconds
       --residue-strategy name      small_primes, powers_of_two, or divisor_free
       --residue-threshold n        Maximum residue modulus threshold
       --treewidth-threshold n      Residue DP treewidth threshold
@@ -106,16 +104,6 @@ function _option_value(args::Vector{String}, index::Int, option::String)
 
     index < length(args) || error("Missing value for option $option")
     return option, args[index + 1], 2
-end
-
-function _parse_float(value::AbstractString, name::AbstractString)
-    try
-        parsed = parse(Float64, value)
-        parsed >= 0.0 || error()
-        return parsed
-    catch
-        error("Invalid nonnegative Float64 for $name: $value")
-    end
 end
 
 function _parse_int(value::AbstractString, name::AbstractString)
@@ -143,7 +131,6 @@ function parse_args(args::Vector{String})
     scip_config = nothing
     output_path = nothing
     out_dir = nothing
-    time_limit_sec = nothing
     residue_strategy = QIP.PresolveConfig.DEFAULT_PRESOLVE_RESIDUE_STRATEGY
     residue_threshold = QIP.PresolveConfig.DEFAULT_PRESOLVE_RESIDUE_THRESHOLD
     treewidth_threshold = QIP.PresolveConfig.DEFAULT_PRESOLVE_TREEWIDTH_THRESHOLD
@@ -163,8 +150,6 @@ function parse_args(args::Vector{String})
                 output_path = value
             elseif option == "--out-dir"
                 out_dir = value
-            elseif option == "--time-limit"
-                time_limit_sec = _parse_float(value, option)
             elseif option == "--residue-strategy"
                 residue_strategy = _parse_strategy(value)
             elseif option == "--residue-threshold"
@@ -190,7 +175,6 @@ function parse_args(args::Vector{String})
         scip_config = scip_config === nothing ? nothing : abspath(scip_config),
         output_path = output_path === nothing ? nothing : abspath(output_path),
         out_dir = out_dir === nothing ? nothing : abspath(out_dir),
-        time_limit_sec = time_limit_sec,
         residue_strategy = residue_strategy,
         residue_threshold = residue_threshold,
         treewidth_threshold = treewidth_threshold,
@@ -364,10 +348,6 @@ function apply_scip_settings!(optimizer::SCIP.Optimizer, config::CliConfig)
     if config.scip_config !== nothing
         isfile(config.scip_config) || error("SCIP config file not found: $(config.scip_config)")
         SCIP.@SCIP_CALL SCIP.SCIPreadParams(optimizer.inner, config.scip_config)
-    end
-
-    if config.time_limit_sec !== nothing
-        MOI.set(optimizer, MOI.TimeLimitSec(), config.time_limit_sec)
     end
 
     config.silent && MOI.set(optimizer, MOI.Silent(), true)
@@ -883,7 +863,6 @@ end
 function parameters_dict(config::CliConfig)
     return Dict{String, Any}(
         "scip_config" => config.scip_config,
-        "time_limit_sec" => config.time_limit_sec,
         "residue_strategy" => string(config.residue_strategy),
         "residue_threshold" => config.residue_threshold,
         "treewidth_threshold" => config.treewidth_threshold,
