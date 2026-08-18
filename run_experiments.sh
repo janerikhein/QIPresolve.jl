@@ -6,7 +6,7 @@ instance_dir="$1"
 results_dir="$2"
 args=("${@:3}")
 
-project_dir="/home/htc/jehein/QIPresolve"
+project_dir="/home/htc/jehein/QIPresolve.jl"
 
 # Create output directories
 mkdir -p "$results_dir/logs"
