@@ -84,28 +84,6 @@ function add_constraint!(model::QPModel, qe::QuadExpr, lhs::Float64, rhs::Float6
 end
 
 """
-    scale_constraints_gcd!(model::QPModel) -> Int
-
-Scale all integral constraints in `model` by the gcd of their coefficients and
-tighten finite bounds accordingly. Returns the number of constraints scaled and
-marks the model infeasible if a scaled constraint gets inconsistent bounds.
-"""
-function scale_constraints_gcd!(model::QPModel)
-    model.infeasible && return 0
-
-    nscaled = 0
-    for con in model.cons
-        scale_gcd!(con) && (nscaled += 1)
-        if con.lhs > con.rhs
-            model.infeasible = true
-            return nscaled
-        end
-    end
-
-    return nscaled
-end
-
-"""
     set_var_bounds!(model, id, lb, ub)
 
 Set bounds for variable `id` to `[lb, ub]`.
@@ -149,268 +127,6 @@ function affine_transform!(model::QPModel, var_id::VarId, scale::Float64, offset
     return affine_transform!(model.obj_expr, var_id, scale, offset)
 end
 
-@inline _canonicalize_zero(x::Float64) = (x == 0.0 ? 0.0 : x)
-
-@inline function _is_shifted_binary(var::IntVar)
-    return isinteger(var.lb) && isinteger(var.ub) && var.ub == var.lb + 1.0 && var.lb != 0.0
-end
-
-"""
-    _tighten_singleton_constraint!(model, con)
-
-Tighten variable bounds using the singleton linear constraint `con`.
-
-# Returns
-- `true` if the variable bounds changed.
-- `false` otherwise.
-
-# Side Effects
-- Mutates `model.vars` and may set `model.infeasible = true`.
-"""
-function _tighten_singleton_constraint!(model::QPModel, con::Constraint)
-    var_id = vars(con.qe)[1]
-    coeff = get_lin_coeff(con.qe, var_id)
-    @assert coeff != 0.0
-
-    var_bounds = model.vars[var_id]
-    bound1 = con.lhs / coeff
-    bound2 = con.rhs / coeff
-    singleton_lb = ceil(min(bound1, bound2))
-    singleton_ub = floor(max(bound1, bound2))
-    new_lb = max(var_bounds.lb, singleton_lb)
-    new_ub = min(var_bounds.ub, singleton_ub)
-    new_lb = _canonicalize_zero(new_lb)
-    new_ub = _canonicalize_zero(new_ub)
-
-    if new_lb > new_ub
-        model.infeasible = true
-        return false
-    end
-
-    if new_lb == var_bounds.lb && new_ub == var_bounds.ub
-        return false
-    end
-
-    model.vars[var_id] = IntVar(new_lb, new_ub)
-    return true
-end
-
-"""
-    _fix_vars_and_singletons!(model, postsolver)
-
-Remove fixed variables and singleton constraints from `model`.
-
-Repeatedly fixes variables whose bounds have collapsed, propagates their values
-into constraints and the objective, and tightens domains from singleton
-constraints.
-
-# Returns
-- `true` if `model` changed.
-- `false` otherwise.
-
-# Side Effects
-- Mutates `model`.
-- May mutate `postsolver`.
-- May set `model.infeasible = true`.
-"""
-function _fix_vars_and_singletons!(model::QPModel, postsolver::Union{Nothing, ParityPostsolver})
-    model.infeasible && return false
-
-    changed = false
-    fixed_var_ids = VarId[]
-
-    for (var_id, var) in model.vars
-        if var.lb > var.ub
-            model.infeasible = true
-            return changed
-        end
-        var.lb == var.ub || continue
-        push!(fixed_var_ids, var_id)
-    end
-
-    for var_id in fixed_var_ids
-        haskey(model.vars, var_id) || continue
-        var = model.vars[var_id]
-        postsolver !== nothing && register_fixed_var!(postsolver, var_id, var.lb)
-        var_bound_shift!(model, var_id, var.lb)
-        @assert model.vars[var_id].lb == model.vars[var_id].ub == 0.0
-        for con in model.cons
-            remove_var!(con, var_id)
-        end
-        remove_var!(model.obj_expr, var_id)
-        delete!(model.vars, var_id)
-        changed = true
-    end
-
-    normalize!(model.obj_expr)
-
-    for i in reverse(eachindex(model.cons))
-        con = model.cons[i]
-        normalize!(con)
-
-        if is_empty(con.qe)
-            deleteat!(model.cons, i)
-            changed = true
-            continue
-        end
-
-        if is_singleton(con.qe)
-            tightened = _tighten_singleton_constraint!(model, con)
-            model.infeasible && return true
-            changed = changed || tightened
-            deleteat!(model.cons, i)
-            changed = true
-        end
-    end
-
-    return changed
-end
-
-"""
-    _normalize_shifted_binaries!(model, postsolver)
-
-Shift binary variables with domains `[k, k+1]` back to `[0, 1]`.
-
-# Returns
-- `true` if any shifted binary was normalized.
-- `false` otherwise.
-
-# Side Effects
-- Mutates `model`.
-- May record reconstruction offsets in `postsolver`.
-"""
-function _normalize_shifted_binaries!(model::QPModel, postsolver::Union{Nothing, ParityPostsolver})
-    model.infeasible && return false
-
-    changed = false
-    shifted_binary_ids = VarId[]
-
-    for (var_id, var) in model.vars
-        _is_shifted_binary(var) || continue
-        push!(shifted_binary_ids, var_id)
-    end
-
-    for var_id in shifted_binary_ids
-        haskey(model.vars, var_id) || continue
-        var = model.vars[var_id]
-        _is_shifted_binary(var) || continue
-
-        postsolver !== nothing && add_reconstruction_offset!(postsolver, var_id, var.lb)
-        affine_transform!(model, var_id, 1.0, var.lb)
-        set_var_bounds!(model, var_id, 0.0, 1.0)
-        changed = true
-    end
-
-    return changed
-end
-
-"""
-    _fold_binary_diagonal!(qe, binary_var_ids)
-
-Fold diagonal binary quadratic terms into linear terms in `qe`.
-
-# Returns
-- `true` if any diagonal term was folded.
-- `false` otherwise.
-"""
-function _fold_binary_diagonal!(qe::QuadExpr, binary_var_ids::AbstractVector{VarId})
-    changed = false
-
-    for var_id in binary_var_ids
-        coeff = get_quad_coeff(qe, var_id, var_id)
-        coeff == 0.0 && continue
-        add_lin_coeff!(qe, var_id, coeff) || continue
-        set_quad_coeff!(qe, var_id, var_id, 0.0)
-        changed = true
-    end
-
-    changed && normalize!(qe)
-    return changed
-end
-
-"""
-    _fold_binary_diagonal!(con, binary_var_ids)
-
-Fold diagonal binary quadratic terms into linear terms in `con`.
-"""
-function _fold_binary_diagonal!(con::Constraint, binary_var_ids::AbstractVector{VarId})
-    changed = _fold_binary_diagonal!(con.qe, binary_var_ids)
-    changed || return false
-    normalize!(con)
-    return true
-end
-
-"""
-    _fold_binary_diagonal!(model)
-
-Fold diagonal binary quadratic terms into linear terms throughout `model`.
-
-# Returns
-- `true` if any objective or constraint term changed.
-- `false` otherwise.
-"""
-function _fold_binary_diagonal!(model::QPModel)
-    isempty(model.vars) && return false
-
-    binary_var_ids = [var_id for (var_id, var) in model.vars if is_binary(var)]
-    isempty(binary_var_ids) && return false
-
-    changed = _fold_binary_diagonal!(model.obj_expr, binary_var_ids)
-
-    for con in model.cons
-        changed = _fold_binary_diagonal!(con, binary_var_ids) || changed
-    end
-
-    return changed
-end
-
-normalize!(model::QPModel) = normalize!(model, nothing)
-
-"""
-    normalize!(model, postsolver=nothing)
-
-Normalize `model` to a presolve-stable form.
-
-Repeatedly removes fixed variables and singleton rows, normalizes shifted
-binaries, folds binary diagonal terms, and scales integral constraints by gcd
-until no further change occurs.
-
-# Arguments
-- `model`: Quadratic model mutated in place.
-- `postsolver`: Optional `ParityPostsolver` that records reconstruction data.
-
-# Returns
-- The mutated `model`.
-
-# Side Effects
-- Mutates `model`.
-- May mutate `postsolver`.
-- May set `model.infeasible = true`.
-"""
-function normalize!(model::QPModel, postsolver::Union{Nothing, ParityPostsolver})
-    model.infeasible && return model
-
-    while true
-        changed = false
-
-        changed = _fix_vars_and_singletons!(model, postsolver) || changed
-        model.infeasible && return model
-
-        changed = _normalize_shifted_binaries!(model, postsolver) || changed
-        model.infeasible && return model
-
-        changed = _fold_binary_diagonal!(model) || changed
-        model.infeasible && return model
-
-        changed = (scale_constraints_gcd!(model) > 0) || changed
-        model.infeasible && return model
-
-        changed || break
-    end
-
-    return model
-end
-
 """
     fix_parities!(model, propagator, postsolver=nothing)
 
@@ -430,6 +146,7 @@ function fix_parities!(
     model::QPModel,
     propagator::PropagationManager,
     postsolver::Union{Nothing, ParityPostsolver},
+    stats_accumulator::Union{Nothing, _ParityStatsAccumulator} = nothing,
 )
     nfixed = 0
 
@@ -450,6 +167,7 @@ function fix_parities!(
         postsolver !== nothing && append_fixed_bit!(postsolver, lit.vid, val)
         affine_transform!(model, lit.vid, 2.0, offset)
         set_var_bounds!(model, lit.vid, new_lb, new_ub)
+        _record_fixed_parity_substitution!(stats_accumulator)
         nfixed += 1
     end
 
@@ -506,6 +224,7 @@ function fix_parity_patterns!(
     model::QPModel,
     propagator::ParityPropagator,
     postsolver::Union{Nothing, ParityPostsolver},
+    stats_accumulator::Union{Nothing, _ParityStatsAccumulator} = nothing,
 )
     candidate_vids = VarId[]
 
@@ -593,27 +312,9 @@ function fix_parity_patterns!(
             nrewritten += 1
         end
 
+        _record_pattern_substitution!(stats_accumulator, length(component_lits), length(component_lits))
         substitute_scc_by_new_var!(propagator, scc_vid, b_scc)
     end
 
     return nrewritten
-end
-
-
-fix_vars!(model::QPModel) = fix_vars!(model, nothing)
-
-"""
-    fix_vars!(model, postsolver=nothing)
-
-Apply one fixed-variable cleanup pass to `model`.
-
-# Returns
-- The mutated `model`.
-
-# Side Effects
-- Mutates `model` and may mutate `postsolver`.
-"""
-function fix_vars!(model::QPModel, postsolver::Union{Nothing, ParityPostsolver})
-    _fix_vars_and_singletons!(model, postsolver)
-    return model
 end

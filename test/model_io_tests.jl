@@ -1,5 +1,7 @@
 using Test
 using QIPresolve
+import MathOptInterface as MOI
+import MathOptInterface.FileFormats as FF
 import QIPresolve.PresolvingCore as PC
 
 const IOMOI = QIPresolve.ModelIO.MOI
@@ -7,6 +9,12 @@ const IOQuadTerm = Tuple{Float64, PC.VarId, PC.VarId}
 const IOLinTerm = Tuple{Float64, PC.VarId}
 
 io_empty_qe() = PC.QuadExpr(IOQuadTerm[], IOLinTerm[])
+
+function io_load_lp_core_model(file_path::AbstractString)
+    moi_model = FF.Model(format = FF.FORMAT_LP)
+    MOI.read_from_file(moi_model, file_path)
+    return QIPresolve.build_model(QIPresolve.from_moi(moi_model))
+end
 
 function io_constraint_indices(model, ::Type{F}, ::Type{S}) where {F, S}
     return IOMOI.get(model, IOMOI.ListOfConstraintIndices{F, S}())
@@ -25,6 +33,42 @@ function io_assert_same_expr(actual::PC.QuadExpr, expected::PC.QuadExpr)
         for var_id_2 in @view expected_vars[i:end]
             @test isapprox(PC.get_quad_coeff(actual, var_id_1, var_id_2), PC.get_quad_coeff(expected, var_id_1, var_id_2); atol = 1.0e-12)
         end
+    end
+end
+
+@testset "LP file import path supports presolve" begin
+    lp_path = tempname() * ".lp"
+    write(
+        lp_path,
+        """
+        Minimize
+         obj: x1 + 2 x2
+        Subject To
+         c1: x1 + x2 <= 1
+        Bounds
+         0 <= x1 <= 1
+         0 <= x2 <= 1
+        Binary
+         x1
+         x2
+        End
+        """,
+    )
+
+    try
+        model = io_load_lp_core_model(lp_path)
+        before_nvars = length(model.vars)
+        before_ncons = length(model.cons)
+
+        result = QIPresolve.presolve!(model)
+
+        @test result isa QIPresolve.PresolveResult
+        @test result.model === model
+        @test !model.infeasible
+        @test before_nvars == 2
+        @test before_ncons == 1
+    finally
+        rm(lp_path; force = true)
     end
 end
 
@@ -118,6 +162,38 @@ end
     @test con_quad[(1, 1)] == 4.0
     @test con_quad[(1, 2)] == 3.0
     @test con_lin[1] == 5.0
+end
+
+@testset "save_moi writes LP interval function constraints as one-sided constraints" begin
+    mktempdir() do dir
+        lp_path = joinpath(dir, "ranged_quadratic.lp")
+        vars = Dict{PC.VarId, PC.IntVar}(
+            1 => PC.IntVar(0.0, 2.0),
+            2 => PC.IntVar(0.0, 3.0),
+        )
+        expected_expr = PC.QuadExpr(IOQuadTerm[(2.0, 1, 1), (3.0, 1, 2)], IOLinTerm[(5.0, 1)])
+        con = PC.Constraint(1, deepcopy(expected_expr), -1.0, 9.0)
+        model = PC.QPModel(vars, [con], io_empty_qe(), :min)
+
+        QIPresolve.ModelIO.save_moi(QIPresolve.build_moi_model(model), lp_path)
+        contents = read(lp_path, String)
+
+        @test occursin("_lb:", contents)
+        @test occursin("_ub:", contents)
+        @test !occursin(r":\s*-?[\d.]+(?:[eE][+-]?\d+)?\s*<=\s*\[", contents)
+
+        roundtrip = io_load_lp_core_model(lp_path)
+
+        @test length(roundtrip.vars) == 2
+        @test roundtrip.vars[1] == vars[1]
+        @test roundtrip.vars[2] == vars[2]
+        @test length(roundtrip.cons) == 2
+
+        lower = only([constraint for constraint in roundtrip.cons if constraint.lhs == -1.0 && constraint.rhs == Inf])
+        upper = only([constraint for constraint in roundtrip.cons if constraint.lhs == -Inf && constraint.rhs == 9.0])
+        io_assert_same_expr(lower.qe, expected_expr)
+        io_assert_same_expr(upper.qe, expected_expr)
+    end
 end
 
 @testset "build_moi_model handles objective senses and infeasibility" begin

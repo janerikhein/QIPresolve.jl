@@ -14,14 +14,23 @@ and display utilities used throughout QIPresolve.
 """
 module PresolvingCore
 
+using ..PresolveConfig:
+    DEFAULT_PRESOLVE_RESIDUE_STRATEGY,
+    DEFAULT_PRESOLVE_RESIDUE_THRESHOLD,
+    DEFAULT_PRESOLVE_TREEWIDTH_THRESHOLD
+
 include("model/quad_expr.jl")
 include("model/constraint.jl")
 include("residue/interaction_graph.jl")
 include("residue/tree_decomposition.jl")
 include("parity/xor_constraint.jl")
+include("stats/parity_stats.jl")
+include("stats/residue_stats.jl")
 include("parity/propagation.jl")
 include("parity/parity_postsolve.jl")
 include("model/qp_model.jl")
+include("stats/model_stats.jl")
+include("model/normalization.jl")
 include("residue/dp_propagation.jl")
 include("parity/xor_model.jl")
 include("parity/parity_presolve.jl")
@@ -35,6 +44,9 @@ export
     IntVar,
     Constraint,
     QPModel,
+    ModelStats,
+    ParityStats,
+    ResidueStats,
     InteractionGraph,
     InteractionComponent,
     LinSingleton,

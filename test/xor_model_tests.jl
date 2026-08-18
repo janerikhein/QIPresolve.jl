@@ -22,6 +22,55 @@ function parity_scc_pos(manager::PC.PropagationManager, lit::PC.VarLit)
     return manager.rep_pos_to_scc_pos[rep]
 end
 
+@testset "propagate! drains stale fixing events for absent parity variables" begin
+    model = PC.ParityModel(
+        Dict{PC.VarId, Int}(1 => 1),
+        PC.VarId[1],
+        [PC.XorConstraint(BitVector([1]), false)],
+    )
+    manager = PC.PropagationManager(PC.VarId[1, 2])
+    PC.fix_var!(manager, 2, true)
+
+    @test !isempty(manager.pending_fixings)
+    @test PC.propagate!(model, manager) === model
+    @test isempty(manager.pending_fixings)
+    @test !model.infeasible
+end
+
+@testset "propagate! drains stale substitution events for absent parity variables" begin
+    absent_source_model = PC.ParityModel(
+        Dict{PC.VarId, Int}(1 => 1),
+        PC.VarId[1],
+        [PC.XorConstraint(BitVector([1]), false)],
+    )
+    absent_source_manager = PC.PropagationManager(PC.VarId[1, 2, 3])
+    PC.add_equivalence!(
+        absent_source_manager,
+        PC.VarLit(2, false),
+        PC.VarLit(3, false),
+    )
+
+    @test PC.propagate!(absent_source_model, absent_source_manager) === absent_source_model
+    @test isempty(absent_source_manager.pending_substitutions)
+    @test !absent_source_model.infeasible
+
+    absent_target_model = PC.ParityModel(
+        Dict{PC.VarId, Int}(2 => 1),
+        PC.VarId[2],
+        [PC.XorConstraint(BitVector([1]), false)],
+    )
+    absent_target_manager = PC.PropagationManager(PC.VarId[1, 2])
+    PC.add_equivalence!(
+        absent_target_manager,
+        PC.VarLit(1, false),
+        PC.VarLit(2, false),
+    )
+
+    @test PC.propagate!(absent_target_model, absent_target_manager) === absent_target_model
+    @test isempty(absent_target_manager.pending_substitutions)
+    @test !absent_target_model.infeasible
+end
+
 @testset "gauss_jordan_xor! only pivots and eliminates pure XOR rows" begin
     pos_to_var, var_to_pos = parity_identity_maps(3)
     xor1 = PC.XorConstraint(BitVector([1, 1, 0]), false)
@@ -441,6 +490,29 @@ end
     @test model.cons[1].par == BitVector([1, 0, 1, 1])
     @test model.cons[1].rhs
     @test all(!con.meta.requires_prop for con in model.cons)
+end
+
+@testset "propagate! applies implications from mixed two-term rows" begin
+    pos_to_var, var_to_pos = parity_identity_maps(3)
+    mixed_row = PC.XorConstraint(
+        BitVector([0, 0, 1]),
+        parity_symmetric_bitmatrix(3, [(1, 2)]),
+        false,
+    )
+    fix_row = PC.XorConstraint(BitVector([0, 0, 1]), true)
+
+    model = PC.ParityModel(var_to_pos, pos_to_var, [mixed_row, fix_row])
+    manager = PC.PropagationManager(model.pos_to_var_id)
+
+    out = PC.propagate!(model, manager)
+
+    @test out === model
+    @test !model.infeasible
+    @test PC.fixed_value(manager, 1) == true
+    @test PC.fixed_value(manager, 2) == true
+    @test PC.fixed_value(manager, 3) == true
+    @test isempty(model.cons)
+    @test isempty(model.pivots)
 end
 
 @testset "propagate! re-enqueues fixings across passes when substitutions create fresh occurrences" begin
