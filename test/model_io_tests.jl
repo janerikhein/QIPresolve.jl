@@ -164,6 +164,38 @@ end
     @test con_lin[1] == 5.0
 end
 
+@testset "save_moi writes LP interval function constraints as one-sided constraints" begin
+    mktempdir() do dir
+        lp_path = joinpath(dir, "ranged_quadratic.lp")
+        vars = Dict{PC.VarId, PC.IntVar}(
+            1 => PC.IntVar(0.0, 2.0),
+            2 => PC.IntVar(0.0, 3.0),
+        )
+        expected_expr = PC.QuadExpr(IOQuadTerm[(2.0, 1, 1), (3.0, 1, 2)], IOLinTerm[(5.0, 1)])
+        con = PC.Constraint(1, deepcopy(expected_expr), -1.0, 9.0)
+        model = PC.QPModel(vars, [con], io_empty_qe(), :min)
+
+        QIPresolve.ModelIO.save_moi(QIPresolve.build_moi_model(model), lp_path)
+        contents = read(lp_path, String)
+
+        @test occursin("_lb:", contents)
+        @test occursin("_ub:", contents)
+        @test !occursin(r":\s*-?[\d.]+(?:[eE][+-]?\d+)?\s*<=\s*\[", contents)
+
+        roundtrip = io_load_lp_core_model(lp_path)
+
+        @test length(roundtrip.vars) == 2
+        @test roundtrip.vars[1] == vars[1]
+        @test roundtrip.vars[2] == vars[2]
+        @test length(roundtrip.cons) == 2
+
+        lower = only([constraint for constraint in roundtrip.cons if constraint.lhs == -1.0 && constraint.rhs == Inf])
+        upper = only([constraint for constraint in roundtrip.cons if constraint.lhs == -Inf && constraint.rhs == 9.0])
+        io_assert_same_expr(lower.qe, expected_expr)
+        io_assert_same_expr(upper.qe, expected_expr)
+    end
+end
+
 @testset "build_moi_model handles objective senses and infeasibility" begin
     expected_senses = Dict(
         :min => IOMOI.MIN_SENSE,

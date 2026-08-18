@@ -3,6 +3,7 @@
 using Pkg
 Pkg.activate(joinpath(@__DIR__, ".."))
 
+using CSV
 using Dates
 using JuMP: backend
 
@@ -18,6 +19,7 @@ const DEFAULT_TARGET = joinpath("results", "graph_embedding_instances")
 const CSV_COLUMNS = [
     "instance_name",
     "prefix",
+    "instance_name_prefix",
     "type",
     "num",
     "created_at",
@@ -45,6 +47,9 @@ const CLI_KEYS = Dict(
     "count" => :count,
     "target" => :target,
     "csv" => :csv,
+    "instance-prefix" => :instance_name_prefix,
+    "instance-name-prefix" => :instance_name_prefix,
+    "name-prefix" => :instance_name_prefix,
     "n" => :n,
     "r" => :R,
     "num-anchors" => :num_anchors,
@@ -69,6 +74,7 @@ Base.@kwdef struct GeneratorConfig
     count::Int = 1
     target::String = abspath(DEFAULT_TARGET)
     csv_path::String = joinpath(abspath(DEFAULT_TARGET), "instances.csv")
+    instance_name_prefix::String = ""
     n::Int = 10
     R::Int = 100
     num_anchors::Int = 0
@@ -99,6 +105,7 @@ function usage()
     println("  --count 1")
     println("  --target $(DEFAULT_TARGET)")
     println("  --csv <target>/instances.csv")
+    println("  --instance-prefix <prefix>")
     println("  --n 10")
     println("  --R 100")
     println("  --num-anchors 0")
@@ -133,6 +140,14 @@ function parse_float(value::AbstractString, name::AbstractString)::Float64
     catch
         error("Invalid $name: $value")
     end
+end
+
+function parse_instance_name_prefix(value::AbstractString)::String
+    prefix = strip(value)
+    if occursin("/", prefix) || occursin("\\", prefix)
+        error("Invalid --instance-prefix: path separators are not allowed")
+    end
+    return prefix
 end
 
 function normalize_type(value::AbstractString)::Tuple{String, String}
@@ -232,6 +247,7 @@ function build_config(args::Vector{String})::GeneratorConfig
         count = parse_int(get(options, :count, "1"), "count"),
         target = target,
         csv_path = csv_path,
+        instance_name_prefix = parse_instance_name_prefix(get(options, :instance_name_prefix, "")),
         n = parse_int(get(options, :n, "10"), "n"),
         R = parse_int(get(options, :R, "100"), "R"),
         num_anchors = parse_int(get(options, :num_anchors, "0"), "num_anchors"),
@@ -255,94 +271,45 @@ function build_config(args::Vector{String})::GeneratorConfig
     return config
 end
 
-function csv_escape(value)::String
-    text = string(value)
-    if occursin(",", text) || occursin("\"", text) ||
-            occursin("\n", text) || occursin("\r", text)
-        return "\"" * replace(text, "\"" => "\"\"") * "\""
-    end
-    return text
-end
-
-function parse_csv_line(line::AbstractString)::Vector{String}
-    fields = String[]
-    buffer = IOBuffer()
-    chars = collect(line)
-    in_quotes = false
-    idx = 1
-
-    while idx <= length(chars)
-        char = chars[idx]
-        if char == '"'
-            if in_quotes && idx < length(chars) && chars[idx + 1] == '"'
-                write(buffer, char)
-                idx += 1
-            else
-                in_quotes = !in_quotes
-            end
-        elseif char == ',' && !in_quotes
-            push!(fields, String(take!(buffer)))
-        else
-            write(buffer, char)
-        end
-        idx += 1
-    end
-
-    push!(fields, String(take!(buffer)))
-    return fields
-end
-
-function read_first_line(path::AbstractString)::String
-    open(path, "r") do io
-        eof(io) && return ""
-        return readline(io)
-    end
-end
-
 function ensure_csv_header!(path::AbstractString)
-    expected_header = join(CSV_COLUMNS, ",")
-    if !isfile(path) || filesize(path) == 0
-        open(path, "w") do io
-            println(io, expected_header)
-        end
-        return nothing
-    end
+    (!isfile(path) || filesize(path) == 0) && return nothing
 
-    actual_header = read_first_line(path)
-    actual_header == expected_header || error(
+    actual_header = String.(propertynames(CSV.File(path; limit = 0)))
+    actual_header == CSV_COLUMNS || error(
         "CSV header does not match expected schema in $path"
     )
     return nothing
 end
 
-function next_instance_number(csv_path::AbstractString, prefix::AbstractString)::Int
+csv_value(value) = value === missing ? "" : string(value)
+
+function parse_instance_num(instance_name::AbstractString, instance_name_prefix::AbstractString, prefix::AbstractString)
+    stem = "$(instance_name_prefix)$(prefix)_"
+    startswith(instance_name, stem) || return nothing
+    suffix = SubString(instance_name, ncodeunits(stem) + 1)
+    return tryparse(Int, suffix)
+end
+
+function next_instance_number(
+        csv_path::AbstractString,
+        prefix::AbstractString,
+        instance_name_prefix::AbstractString,
+    )::Int
     !isfile(csv_path) && return 1
     filesize(csv_path) == 0 && return 1
 
-    header = parse_csv_line(read_first_line(csv_path))
-    prefix_col = findfirst(==("prefix"), header)
-    num_col = findfirst(==("num"), header)
-    instance_col = findfirst(==("instance_name"), header)
-    prefix_col === nothing && error("CSV is missing prefix column: $csv_path")
-    num_col === nothing && error("CSV is missing num column: $csv_path")
-
     max_num = 0
-    for (line_idx, line) in enumerate(eachline(csv_path))
-        line_idx == 1 && continue
-        isempty(strip(line)) && continue
-        fields = parse_csv_line(line)
-        length(fields) >= max(prefix_col, num_col) || error(
-            "Malformed CSV row $line_idx in $csv_path"
-        )
-        fields[prefix_col] == prefix || continue
+    for (row_idx, row) in enumerate(CSV.File(csv_path))
+        csv_value(row.prefix) == prefix || continue
+        csv_value(row.instance_name_prefix) == instance_name_prefix || continue
 
-        parsed_num = tryparse(Int, fields[num_col])
-        if parsed_num === nothing && instance_col !== nothing && length(fields) >= instance_col
-            instance_match = match(Regex("^$(prefix)_([0-9]+)\$"), fields[instance_col])
-            parsed_num = instance_match === nothing ? nothing : parse(Int, instance_match.captures[1])
+        parsed_num = row.num === missing ? nothing : tryparse(Int, string(row.num))
+        if parsed_num === nothing
+            instance_name = row.instance_name === missing ? "" : string(row.instance_name)
+            parsed_num = parse_instance_num(instance_name, instance_name_prefix, prefix)
         end
         parsed_num === nothing && error(
-            "Invalid num for prefix $prefix on CSV row $line_idx in $csv_path"
+            "Invalid num for prefix $(instance_name_prefix)$prefix on CSV row $(row_idx + 1) in $csv_path"
         )
         max_num = max(max_num, parsed_num)
     end
@@ -439,6 +406,7 @@ function set_common_row_fields!(
     )
     row["instance_name"] = instance_name
     row["prefix"] = config.prefix
+    row["instance_name_prefix"] = config.instance_name_prefix
     row["type"] = config.type_label
     row["num"] = string(num)
     row["created_at"] = Dates.format(Dates.now(), "yyyy-mm-ddTHH:MM:SS")
@@ -485,17 +453,20 @@ function set_type_specific_row_fields!(row::Dict{String, String}, config::Genera
     return row
 end
 
+function ordered_csv_row(row::Dict{String, String})
+    return (; (Symbol(column) => row[column] for column in CSV_COLUMNS)...)
+end
+
 function csv_row(config::GeneratorConfig, instance_name::String, num::Int, seed::Int, file_name::String, file_path::String)
     row = blank_csv_row()
     set_common_row_fields!(row, config, instance_name, num, seed, file_name, file_path)
     set_type_specific_row_fields!(row, config)
-    return row
+    return ordered_csv_row(row)
 end
 
-function append_csv_row!(path::AbstractString, row::Dict{String, String})
-    open(path, "a") do io
-        println(io, join((csv_escape(row[column]) for column in CSV_COLUMNS), ","))
-    end
+function append_csv_row!(path::AbstractString, row::NamedTuple)
+    has_existing_rows = isfile(path) && filesize(path) > 0
+    CSV.write(path, [row]; append = has_existing_rows, writeheader = !has_existing_rows)
     return nothing
 end
 
@@ -504,11 +475,11 @@ function run(config::GeneratorConfig)
     mkpath(dirname(config.csv_path))
     ensure_csv_header!(config.csv_path)
 
-    start_num = next_instance_number(config.csv_path, config.prefix)
+    start_num = next_instance_number(config.csv_path, config.prefix, config.instance_name_prefix)
     for offset in 0:(config.count - 1)
         num = start_num + offset
         seed = config.seed_base + (num - 1) * config.seed_step
-        instance_name = "$(config.prefix)_$num"
+        instance_name = "$(config.instance_name_prefix)$(config.prefix)_$num"
         file_name = "$instance_name.lp"
         file_path = joinpath(config.target, file_name)
         isfile(file_path) && error("Refusing to overwrite existing instance file: $file_path")

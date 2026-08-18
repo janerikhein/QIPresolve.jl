@@ -17,4 +17,5 @@ using Test
     include("parity_stats_tests.jl")
     include("residue_stats_tests.jl")
     include("presolve_tests.jl")
+    include("presolve_lp_scip_stats_script_tests.jl")
 end
