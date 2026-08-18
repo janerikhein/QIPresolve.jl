@@ -10,6 +10,7 @@ using Test
     include("model_stats_tests.jl")
     include("model_io_tests.jl")
     include("instance_generation_tests.jl")
+    include("generate_instance_script_tests.jl")
     include("propagation_tests.jl")
     include("xor_constraint_tests.jl")
     include("xor_model_tests.jl")
@@ -17,5 +18,7 @@ using Test
     include("parity_stats_tests.jl")
     include("residue_stats_tests.jl")
     include("presolve_tests.jl")
+    include("presolve_lp_stats_script_tests.jl")
+    include("merge_graph_embedding_presolve_stats_script_tests.jl")
     include("presolve_lp_scip_stats_script_tests.jl")
 end

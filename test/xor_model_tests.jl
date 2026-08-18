@@ -163,7 +163,7 @@ end
     @test model.cons[4].rhs
 end
 
-@testset "substitute_parity_pivots! asserts on same-type pivot rows retaining a parity pivot" begin
+@testset "substitute_parity_pivots! reduces same-type pivot rows retaining a parity pivot" begin
     pos_to_var, var_to_pos = parity_identity_maps(3)
     xor_pivot1 = PC.XorConstraint(BitVector([1, 1, 0]), false)
     xor_pivot2 = PC.XorConstraint(BitVector([1, 0, 1]), true)
@@ -172,7 +172,12 @@ end
     model.pivots[1] = (1, nothing)
     model.pivots[2] = (3, nothing)
 
-    @test_throws AssertionError PC.substitute_parity_pivots!(model)
+    PC.substitute_parity_pivots!(model)
+
+    @test model.cons[2].par == BitVector([0, 1, 1])
+    @test model.cons[2].rhs
+    @test model.pivots[2] == (3, nothing)
+    @test !model.infeasible
 end
 
 @testset "substitute_parity_pivots! ignores conjunctive pivot owners" begin

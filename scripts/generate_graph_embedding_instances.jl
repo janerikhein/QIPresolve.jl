@@ -18,8 +18,6 @@ const DEFAULT_TARGET = joinpath("results", "graph_embedding_instances")
 
 const CSV_COLUMNS = [
     "instance_name",
-    "prefix",
-    "instance_name_prefix",
     "type",
     "num",
     "created_at",
@@ -31,15 +29,10 @@ const CSV_COLUMNS = [
     "edge_density",
     "pH2",
     "max_coord_tries",
-    "max_global_tries",
-    "max_tries_H1",
     "max_tries_H2",
     "infeas_strategy",
     "infeas_base",
     "box_scale",
-    "contraction_vertices",
-    "file_name",
-    "file_path",
 ]
 
 const CLI_KEYS = Dict(
@@ -281,8 +274,6 @@ function ensure_csv_header!(path::AbstractString)
     return nothing
 end
 
-csv_value(value) = value === missing ? "" : string(value)
-
 function parse_instance_num(instance_name::AbstractString, instance_name_prefix::AbstractString, prefix::AbstractString)
     stem = "$(instance_name_prefix)$(prefix)_"
     startswith(instance_name, stem) || return nothing
@@ -300,13 +291,13 @@ function next_instance_number(
 
     max_num = 0
     for (row_idx, row) in enumerate(CSV.File(csv_path))
-        csv_value(row.prefix) == prefix || continue
-        csv_value(row.instance_name_prefix) == instance_name_prefix || continue
+        instance_name = row.instance_name === missing ? "" : string(row.instance_name)
+        name_num = parse_instance_num(instance_name, instance_name_prefix, prefix)
+        name_num === nothing && continue
 
         parsed_num = row.num === missing ? nothing : tryparse(Int, string(row.num))
         if parsed_num === nothing
-            instance_name = row.instance_name === missing ? "" : string(row.instance_name)
-            parsed_num = parse_instance_num(instance_name, instance_name_prefix, prefix)
+            parsed_num = name_num
         end
         parsed_num === nothing && error(
             "Invalid num for prefix $(instance_name_prefix)$prefix on CSV row $(row_idx + 1) in $csv_path"
@@ -401,12 +392,8 @@ function set_common_row_fields!(
         instance_name::String,
         num::Int,
         seed::Int,
-        file_name::String,
-        file_path::String,
     )
     row["instance_name"] = instance_name
-    row["prefix"] = config.prefix
-    row["instance_name_prefix"] = config.instance_name_prefix
     row["type"] = config.type_label
     row["num"] = string(num)
     row["created_at"] = Dates.format(Dates.now(), "yyyy-mm-ddTHH:MM:SS")
@@ -415,8 +402,6 @@ function set_common_row_fields!(
     row["seed"] = string(seed)
     row["num_anchors"] = string(config.num_anchors)
     row["alpha"] = string(config.alpha)
-    row["file_name"] = file_name
-    row["file_path"] = file_path
     return row
 end
 
@@ -426,24 +411,17 @@ function set_type_specific_row_fields!(row::Dict{String, String}, config::Genera
         row["max_coord_tries"] = string(config.max_coord_tries)
     elseif config.prefix == "lam"
         row["pH2"] = string(config.pH2)
-        row["max_global_tries"] = string(config.max_global_tries)
-        row["max_tries_H1"] = string(config.max_tries_H1)
         row["max_tries_H2"] = string(config.max_tries_H2)
     elseif config.prefix == "gr"
-        row["max_global_tries"] = string(config.max_global_tries)
         row["max_tries_H2"] = string(config.max_tries_H2)
     elseif config.prefix == "infeas"
         row["infeas_strategy"] = string(config.infeas_strategy)
         row["infeas_base"] = string(config.infeas_base)
         row["box_scale"] = string(config.box_scale)
-        row["contraction_vertices"] = config.contraction_vertices_label
         if config.infeas_base == :globally_rigid
-            row["max_global_tries"] = string(config.max_global_tries)
             row["max_tries_H2"] = string(config.max_tries_H2)
         elseif config.infeas_base == :laman
             row["pH2"] = string(config.pH2)
-            row["max_global_tries"] = string(config.max_global_tries)
-            row["max_tries_H1"] = string(config.max_tries_H1)
             row["max_tries_H2"] = string(config.max_tries_H2)
         elseif config.infeas_base == :random_2_connected
             row["edge_density"] = string(config.edge_density)
@@ -457,9 +435,9 @@ function ordered_csv_row(row::Dict{String, String})
     return (; (Symbol(column) => row[column] for column in CSV_COLUMNS)...)
 end
 
-function csv_row(config::GeneratorConfig, instance_name::String, num::Int, seed::Int, file_name::String, file_path::String)
+function csv_row(config::GeneratorConfig, instance_name::String, num::Int, seed::Int)
     row = blank_csv_row()
-    set_common_row_fields!(row, config, instance_name, num, seed, file_name, file_path)
+    set_common_row_fields!(row, config, instance_name, num, seed)
     set_type_specific_row_fields!(row, config)
     return ordered_csv_row(row)
 end
@@ -488,7 +466,7 @@ function run(config::GeneratorConfig)
         save_moi(backend(model), file_path)
         append_csv_row!(
             config.csv_path,
-            csv_row(config, instance_name, num, seed, file_name, file_path),
+            csv_row(config, instance_name, num, seed),
         )
         println("saved $instance_name -> $file_path")
     end

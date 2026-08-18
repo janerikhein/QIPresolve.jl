@@ -200,8 +200,12 @@ Eliminate stored pure-parity pivots from parity terms in other rows.
 # Returns
 - The mutated `model`.
 """
-function substitute_parity_pivots!(model::ParityModel)
+function substitute_parity_pivots!(
+    model::ParityModel,
+    stats_accumulator::Union{Nothing, _ParityStatsAccumulator} = nothing,
+)
     for (piv_row_idx, pivot) in enumerate(model.pivots)
+        model.infeasible && break
         pivot === nothing && continue
 
         piv_col_idx1, piv_col_idx2 = pivot
@@ -211,6 +215,7 @@ function substitute_parity_pivots!(model::ParityModel)
         piv_is_pure_xor = piv_con.meta.is_pure_xor
 
         for (row_idx, con) in enumerate(model.cons)
+            model.infeasible && break
             row_idx == piv_row_idx && continue
 
             ensure_updated!(con)
@@ -224,7 +229,13 @@ function substitute_parity_pivots!(model::ParityModel)
             end
 
             if con.meta.is_pure_xor == piv_is_pure_xor
-                @assert !con.par[piv_col_idx1]
+                xor_con!(con, piv_con)
+                ensure_updated!(con)
+                _revalidate_pivot!(model, row_idx)
+                if constraint_nnz(con) == 0 && con.rhs
+                    model.infeasible = true
+                    _record_infeasibility!(stats_accumulator, :elimination)
+                end
             else
                 xor_con!(con, piv_con)
             end

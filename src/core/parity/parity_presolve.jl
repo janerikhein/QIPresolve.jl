@@ -437,7 +437,7 @@ function parity_presolve_phase!(
                 return (changed = normalization_changed, fixed_parities = 0, pattern_rewritten_vars = 0)
             end
             substitute_pivots_in_conjunctive_terms!(parity_model)
-            substitute_parity_pivots!(parity_model)
+            substitute_parity_pivots!(parity_model, stats_accumulator)
         else
             gauss_jordan_xor_and!(parity_model, stats_accumulator)
             if parity_model.infeasible

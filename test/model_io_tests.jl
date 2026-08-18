@@ -196,6 +196,30 @@ end
     end
 end
 
+@testset "LP import marks contradictory variable bounds infeasible" begin
+    lp_path = tempname() * ".lp"
+    write(
+        lp_path,
+        """
+        Minimize
+         obj: x
+        Bounds
+         5 <= x <= 3
+        General
+         x
+        End
+        """,
+    )
+
+    try
+        model = io_load_lp_core_model(lp_path)
+        @test model.infeasible
+        @test model.vars[1] == PC.IntVar(5.0, 3.0)
+    finally
+        rm(lp_path; force = true)
+    end
+end
+
 @testset "build_moi_model handles objective senses and infeasibility" begin
     expected_senses = Dict(
         :min => IOMOI.MIN_SENSE,

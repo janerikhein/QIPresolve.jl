@@ -40,7 +40,6 @@ Store declared bounds and type information for one variable.
 - `var_type`: Variable type symbol, one of `:cont`, `:int`, or `:bin`.
 
 # Throws
-- `ArgumentError` if `lb > ub`.
 - `ArgumentError` if `var_type` is unsupported.
 """
 struct VarInfo
@@ -49,7 +48,6 @@ struct VarInfo
     var_type::Symbol
 
     function VarInfo(lb::Float64, ub::Float64, var_type::Symbol)
-        lb > ub && throw(ArgumentError("lb must be <= ub. lb:$lb, ub:$ub"))
         var_type in (:cont, :int, :bin) || throw(ArgumentError("invalid var type: $var_type"))
 
         return new(lb, ub, var_type)
@@ -186,16 +184,24 @@ Accumulate a quadratic-program model before final construction.
 - `cons`: Constraint builders in insertion order.
 - `obj_expr`: Objective-expression builder.
 - `obj_sense`: Objective sense symbol.
+- `infeasible`: Whether imported metadata already proves infeasibility.
 """
 mutable struct QPModelBuilder
     vars::Dict{VarId, VarInfo}
     cons::Vector{ConstraintBuilder}
     obj_expr::QuadExprBuilder
     obj_sense::Symbol
+    infeasible::Bool
 end
 
 
-QPModelBuilder() = QPModelBuilder(Dict{VarId, VarInfo}(), Vector{ConstraintBuilder}(), QuadExprBuilder(), :undef)
+QPModelBuilder() = QPModelBuilder(
+    Dict{VarId, VarInfo}(),
+    Vector{ConstraintBuilder}(),
+    QuadExprBuilder(),
+    :undef,
+    false,
+)
 
 """
     from_moi(moi_model)
@@ -280,15 +286,13 @@ the variable type is restricted to the stronger existing type.
 
 # Returns
 - The updated `VarInfo` stored for `id`.
-
-# Throws
-- `ArgumentError` if the resulting bounds or type are invalid.
 """
 function register_var_info!(
         model::QPModelBuilder, id::VarId;
         var_type::Symbol = :cont, lb::Float64 = -Inf, ub::Float64 = Inf
     )
     if !haskey(model.vars, id)
+        lb > ub && (model.infeasible = true)
         model.vars[id] = VarInfo(lb, ub, var_type)
         return
     else
@@ -303,6 +307,7 @@ function register_var_info!(
     # restrict bounds
     lb = max(var_info.lb, lb)
     ub = min(var_info.ub, ub)
+    lb > ub && (model.infeasible = true)
 
     return model.vars[id] = VarInfo(lb, ub, var_type)
 end
@@ -504,5 +509,7 @@ function build_model(builder::QPModelBuilder)
     obj_expr = build(builder.obj_expr)
     obj_sense = builder.obj_sense
 
-    return QPModel(vars, cons, obj_expr, obj_sense)
+    model = QPModel(vars, cons, obj_expr, obj_sense)
+    model.infeasible = builder.infeasible
+    return model
 end

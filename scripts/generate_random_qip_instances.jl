@@ -15,8 +15,6 @@ const INSTANCE_PREFIX = "qip"
 
 const CSV_COLUMNS = [
     "instance_name",
-    "prefix",
-    "instance_name_prefix",
     "num",
     "created_at",
     "nvars",
@@ -35,8 +33,6 @@ const CSV_COLUMNS = [
     "force_lin_even",
     "force_feasibility",
     "constraint_slack_range",
-    "file_name",
-    "file_path",
 ]
 
 const CLI_KEYS = Dict(
@@ -253,8 +249,6 @@ function ensure_csv_header!(path::AbstractString)
     return nothing
 end
 
-csv_value(value) = value === missing ? "" : string(value)
-
 function parse_instance_num(instance_name::AbstractString, instance_name_prefix::AbstractString)
     stem = "$(instance_name_prefix)$(INSTANCE_PREFIX)_"
     startswith(instance_name, stem) || return nothing
@@ -268,13 +262,13 @@ function next_instance_number(csv_path::AbstractString, instance_name_prefix::Ab
 
     max_num = 0
     for (row_idx, row) in enumerate(CSV.File(csv_path))
-        csv_value(row.prefix) == INSTANCE_PREFIX || continue
-        csv_value(row.instance_name_prefix) == instance_name_prefix || continue
+        instance_name = row.instance_name === missing ? "" : string(row.instance_name)
+        name_num = parse_instance_num(instance_name, instance_name_prefix)
+        name_num === nothing && continue
 
         parsed_num = row.num === missing ? nothing : tryparse(Int, string(row.num))
         if parsed_num === nothing
-            instance_name = row.instance_name === missing ? "" : string(row.instance_name)
-            parsed_num = parse_instance_num(instance_name, instance_name_prefix)
+            parsed_num = name_num
         end
         parsed_num === nothing && error(
             "Invalid num for prefix $(instance_name_prefix)$INSTANCE_PREFIX on CSV row $(row_idx + 1) in $csv_path"
@@ -312,13 +306,9 @@ function csv_row(
         instance_name::String,
         num::Int,
         seed::Int,
-        file_name::String,
-        file_path::String,
     )
     row = blank_csv_row()
     row["instance_name"] = instance_name
-    row["prefix"] = INSTANCE_PREFIX
-    row["instance_name_prefix"] = config.instance_name_prefix
     row["num"] = string(num)
     row["created_at"] = Dates.format(Dates.now(), "yyyy-mm-ddTHH:MM:SS")
     row["nvars"] = string(config.nvars)
@@ -337,8 +327,6 @@ function csv_row(
     row["force_lin_even"] = string(config.force_lin_even)
     row["force_feasibility"] = string(config.force_feasibility)
     row["constraint_slack_range"] = config.constraint_slack_range_label
-    row["file_name"] = file_name
-    row["file_path"] = file_path
     return (; (Symbol(column) => row[column] for column in CSV_COLUMNS)...)
 end
 
@@ -371,7 +359,7 @@ function run(config::GeneratorConfig)
         save_moi(backend(model), file_path)
         append_csv_row!(
             config.csv_path,
-            csv_row(config, instance_name, num, seed, file_name, file_path),
+            csv_row(config, instance_name, num, seed),
         )
         println("saved $instance_name -> $file_path")
     end
