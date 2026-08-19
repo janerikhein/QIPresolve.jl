@@ -10,6 +10,7 @@ const EXPECTED_MERGED_PRESOLVE_HEADER = [
     "type",
     "n",
     "R",
+    "num_anchors",
     "alpha",
     "edge_density",
     "infeas_strategy",
@@ -126,6 +127,7 @@ end
         @test rows[1].type == "2_connected"
         @test rows[1].n == 20
         @test rows[1].R == 100
+        @test rows[1].num_anchors == 0
         @test rows[1].alpha == 0.0
         @test rows[1].edge_density == 0.2
         @test rows[1].log_domain_sum_orig == 10.5

@@ -22,6 +22,7 @@ const INSTANCE_COLUMNS = [
     "type",
     "n",
     "R",
+    "num_anchors",
     "alpha",
     "edge_density",
     "infeas_strategy",

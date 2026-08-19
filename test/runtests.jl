@@ -20,5 +20,6 @@ using Test
     include("presolve_tests.jl")
     include("presolve_lp_stats_script_tests.jl")
     include("merge_graph_embedding_presolve_stats_script_tests.jl")
+    include("aggregate_graph_embedding_presolve_stats_script_tests.jl")
     include("presolve_lp_scip_stats_script_tests.jl")
 end

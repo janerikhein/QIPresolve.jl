@@ -38,13 +38,23 @@ for instance_path in "${instances[@]}"; do
 
         echo "Submitting: $instance_name"
 
+        #--exclusive \
         sbatch \
-            --exclusive \
-            --partition=opt_int \
-            --constraint=Gold5122 \
+            --partition=small \
+            --constraint=Gold6338 \
             --time=02:05:00 \
+            --nodes=1 \
+            --cpu-freq=medium-medium:Performance \
+            --threads-per-core=1 \
+            --cpus-per-task=1 \
+            --exclude=htc-cmp[101-102],htc-cmp104,htc-cmp126,htc-cmp[145-148] \
+            --memory=12000 \
+            --job-name= xx \
+            --mail-user="hein@zib.de" \
+            --mail-type=END,FAIL \
+            --wrap="$command" \
             --output="$log_file" \
-            --wrap="$command"
+            --error="$error_file"
 
     else
         echo "Already submitted/solved: $instance_name"
