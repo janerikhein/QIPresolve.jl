@@ -155,7 +155,7 @@ function _residue_presolve_pass_impl!(
 end
 
 """
-    presolve!(model; residue_strategy, residue_threshold, treewidth_threshold, collect_stats=false)
+    presolve!(model; parity_strategy, residue_strategy, residue_threshold, treewidth_threshold, collect_stats=false)
 
 Run the combined parity and residue presolve pipeline.
 
@@ -168,11 +168,13 @@ defined in `QIPresolve.PresolveConfig`.
 """
 function presolve!(
         model::QPModel;
+        parity_strategy = DEFAULT_PRESOLVE_PARITY_STRATEGY,
         residue_strategy::Symbol = DEFAULT_PRESOLVE_RESIDUE_STRATEGY,
         residue_threshold::Integer = DEFAULT_PRESOLVE_RESIDUE_THRESHOLD,
         treewidth_threshold::Integer = DEFAULT_PRESOLVE_TREEWIDTH_THRESHOLD,
         collect_stats::Bool = false,
     )::PresolveResult
+    parity_strategy = _normalize_parity_strategy(parity_strategy)
     postsolver = ParityPostsolver(keys(model.vars))
     parity_stats_accumulator = collect_stats ? _ParityStatsAccumulator() : nothing
     residue_stats_accumulator = collect_stats ? _ResidueStatsAccumulator() : nothing
@@ -194,7 +196,13 @@ function presolve!(
 
     propagator = PropagationManager(VarId[])
 
-    parity_presolve!(model, propagator, postsolver, parity_stats_accumulator)
+    parity_presolve!(
+        model,
+        propagator,
+        postsolver,
+        parity_stats_accumulator;
+        parity_strategy = parity_strategy,
+    )
     model.infeasible && return PresolveResult(
         model,
         postsolver,
@@ -212,7 +220,13 @@ function presolve!(
     )
 
     while !model.infeasible && residue_stats.tightened_to_equality
-        parity_stats = parity_presolve!(model, propagator, postsolver, parity_stats_accumulator)
+        parity_stats = parity_presolve!(
+            model,
+            propagator,
+            postsolver,
+            parity_stats_accumulator;
+            parity_strategy = parity_strategy,
+        )
         model.infeasible && break
         parity_stats.domains_changed || break
 

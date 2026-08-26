@@ -15,6 +15,7 @@ and display utilities used throughout QIPresolve.
 module PresolvingCore
 
 using ..PresolveConfig:
+    DEFAULT_PRESOLVE_PARITY_STRATEGY,
     DEFAULT_PRESOLVE_RESIDUE_STRATEGY,
     DEFAULT_PRESOLVE_RESIDUE_THRESHOLD,
     DEFAULT_PRESOLVE_TREEWIDTH_THRESHOLD
@@ -26,6 +27,7 @@ include("residue/tree_decomposition.jl")
 include("parity/xor_constraint.jl")
 include("stats/parity_stats.jl")
 include("stats/residue_stats.jl")
+include("parity/parity_strategy.jl")
 include("parity/propagation.jl")
 include("parity/parity_postsolve.jl")
 include("model/qp_model.jl")

@@ -127,11 +127,19 @@ end
 
     model = PC.QPModel(vars, [con1, con2, con3, con4], parity_empty_objective(), :min)
     parity_model = PC.build_parity_model(model)
+    mod2_model = PC.build_parity_model(model; parity_strategy = :mod2_basic)
+    mod4_basic_model = PC.build_parity_model(model; parity_strategy = :mod4_basic)
+    full_model = PC.build_parity_model(model; parity_strategy = :full)
 
     @test parity_model.pos_to_var_id == [2, 1, 3]
     @test parity_model.var_id_to_pos == Dict(2 => 1, 1 => 2, 3 => 3)
     @test !haskey(parity_model.var_id_to_pos, 4)
     @test length(parity_model.cons) == 6
+    @test length(mod2_model.cons) == 4
+    @test all(con -> con.meta.is_pure_xor, mod2_model.cons)
+    @test length(mod4_basic_model.cons) == 6
+    @test length(full_model.cons) == 6
+    @test_throws ArgumentError PC.build_parity_model(model; parity_strategy = :invalid)
 
     @test parity_model.cons[1].meta.is_pure_xor
     @test parity_model.cons[1].par == BitVector([1, 0, 0])
@@ -1040,4 +1048,41 @@ end
 
     @test !model.infeasible
     @test all(PC.is_binary(var) for var in values(model.vars))
+end
+
+@testset "parity_presolve! supports parity strategy presets" begin
+    mod2_model = parity_single_distance_model()
+    mod2_result = PC.parity_presolve!(
+        mod2_model;
+        collect_stats = true,
+        parity_strategy = :mod2_basic,
+    )
+    @test !mod2_model.infeasible
+    @test !mod2_result.infeasible
+    @test mod2_result.parity_stats.num_xorand_constraints_generated == 0
+
+    mod4_basic_model = parity_single_distance_model()
+    mod4_basic_result = PC.parity_presolve!(
+        mod4_basic_model;
+        collect_stats = true,
+        parity_strategy = :mod4_basic,
+    )
+    @test !mod4_basic_model.infeasible
+    @test !mod4_basic_result.infeasible
+    @test mod4_basic_result.parity_stats.num_xorand_constraints_generated > 0
+
+    full_model = parity_single_distance_model()
+    full_result = PC.parity_presolve!(
+        full_model;
+        collect_stats = true,
+        parity_strategy = :full,
+    )
+    @test !full_model.infeasible
+    @test !full_result.infeasible
+    @test full_result.parity_stats.num_xorand_constraints_generated > 0
+
+    @test_throws ArgumentError PC.parity_presolve!(
+        parity_single_distance_model();
+        parity_strategy = :unknown,
+    )
 end

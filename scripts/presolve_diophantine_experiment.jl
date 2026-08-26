@@ -27,6 +27,7 @@ const DEFAULT_TYPES = ["bilinear", "separable", "pure", "general"]
 const DEFAULT_SEED_BASE = 1
 const DEFAULT_SEED_STEP = 1
 const DEFAULT_OUTPUT_DIR = joinpath("results", "diophantine_presolve_experiment")
+const DEFAULT_PARITY_STRATEGY = QIP.PresolveConfig.DEFAULT_PRESOLVE_PARITY_STRATEGY
 const SUMMARY_FILENAME = "parity_presolve_summary.csv"
 const SUMMARY_HEADER = "type,m,avg_b_fix,avg_b_pat,avg_dom_red,avg_time"
 
@@ -44,6 +45,7 @@ const CLI_KEYS = Dict(
     "seed-step" => :seed_step,
     "output-dir" => :output_dir,
     "output" => :output_dir,
+    "parity-strategy" => :parity_strategy,
 )
 
 Base.@kwdef struct CliConfig
@@ -54,6 +56,7 @@ Base.@kwdef struct CliConfig
     seed_base::Int = DEFAULT_SEED_BASE
     seed_step::Int = DEFAULT_SEED_STEP
     output_dir::String = abspath(DEFAULT_OUTPUT_DIR)
+    parity_strategy::Symbol = DEFAULT_PARITY_STRATEGY
 end
 
 function usage()
@@ -69,6 +72,7 @@ function usage()
       --seed-base n                First deterministic instance seed, default $DEFAULT_SEED_BASE
       --seed-step n                Seed increment, default $DEFAULT_SEED_STEP
       --output-dir path            Output directory, default $DEFAULT_OUTPUT_DIR
+      --parity-strategy name       full, mod2-basic, or mod4-basic, default $DEFAULT_PARITY_STRATEGY
       -h, --help                   Show this help
     """
 end
@@ -110,6 +114,12 @@ function parse_types(value::AbstractString)::Vector{String}
     end
     isempty(types) && error("types must contain at least one type")
     return types
+end
+
+function parse_parity_strategy(value::AbstractString)::Symbol
+    normalized = Symbol(replace(lowercase(strip(value)), "-" => "_"))
+    normalized in (:full, :mod2_basic, :mod4_basic) && return normalized
+    error("Invalid parity strategy: $value. Expected full, mod2-basic, or mod4-basic.")
 end
 
 function _option_value(args::Vector{String}, index::Int, option::String)
@@ -160,6 +170,9 @@ function build_config(args::Vector{String})::Union{Nothing, CliConfig}
         seed_base = parse_int(get(options, :seed_base, string(DEFAULT_SEED_BASE)), "seed_base"),
         seed_step = parse_int(get(options, :seed_step, string(DEFAULT_SEED_STEP)), "seed_step"),
         output_dir = abspath(get(options, :output_dir, DEFAULT_OUTPUT_DIR)),
+        parity_strategy = haskey(options, :parity_strategy) ?
+            parse_parity_strategy(options[:parity_strategy]) :
+            DEFAULT_PARITY_STRATEGY,
     )
 
     config.nvars >= 1 || error("nvars must be >= 1")
@@ -398,7 +411,13 @@ function postsolve_bit_counts(
     )
 end
 
-function run_instance(type::AbstractString, nvars::Int, ncons::Int, seed::Int)
+function run_instance(
+        type::AbstractString,
+        nvars::Int,
+        ncons::Int,
+        seed::Int;
+        parity_strategy::Symbol = DEFAULT_PARITY_STRATEGY,
+    )
     rng = MersenneTwister(seed)
     p = _sample_density(rng)
     generator_seed = rand(rng, 1:typemax(Int32))
@@ -417,7 +436,13 @@ function run_instance(type::AbstractString, nvars::Int, ncons::Int, seed::Int)
     PC.normalize!(model, postsolver)
     @assert model.infeasible==false
     start_time = time()
-    PC.parity_presolve!(model, propagator, postsolver, nothing)
+    PC.parity_presolve!(
+        model,
+        propagator,
+        postsolver,
+        nothing;
+        parity_strategy = parity_strategy,
+    )
     presolve_time = time() - start_time
     @assert model.infeasible==false
     presolved_log_domain_sum = model.infeasible ? 0.0 : log_domain_sum(model)
@@ -524,7 +549,13 @@ function run_experiment(config::CliConfig)
             for _ in 1:config.instances_per_cell
                 seed = config.seed_base + instance_counter * config.seed_step
                 instance_counter += 1
-                instance = run_instance(type, config.nvars, ncons, seed)
+                instance = run_instance(
+                    type,
+                    config.nvars,
+                    ncons,
+                    seed;
+                    parity_strategy = config.parity_strategy,
+                )
                 push!(instances, instance)
                 append_tuple_row!(density_path(config, type), instance.p, instance.dom_red)
                 append_tuple_row!(

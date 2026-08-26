@@ -45,6 +45,10 @@ end
     @test DiophantineExperimentScript.canonical_type("purely_quadratic") == "pure"
     @test DiophantineExperimentScript.parse_types("bilinear,seperable,general") ==
           ["bilinear", "separable", "general"]
+    @test DiophantineExperimentScript.parse_parity_strategy("mod2-basic") == :mod2_basic
+    @test DiophantineExperimentScript.parse_parity_strategy("mod4_basic") == :mod4_basic
+    @test DiophantineExperimentScript.parse_parity_strategy("full") == :full
+    @test_throws ErrorException DiophantineExperimentScript.parse_parity_strategy("basic")
 
     p = 0.25
     @test DiophantineExperimentScript.type_probabilities("bilinear", p) ==
@@ -167,10 +171,12 @@ end
                     "--constraints", "1",
                     "--types", "bilinear,seperable",
                     "--seed-base", "41000",
+                    "--parity-strategy", "mod2-basic",
                 ])
             end
         end
 
+        @test result.config.parity_strategy == :mod2_basic
         @test result.instance_count == 2
         @test length(result.rows) == 2
         @test result.summary_path == joinpath(dir, "parity_presolve_summary.csv")
