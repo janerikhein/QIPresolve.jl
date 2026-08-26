@@ -35,6 +35,16 @@ function _ResidueStatsAccumulator(stats::ResidueStats = ResidueStats())
     )
 end
 
+_residue_stats(accumulator::_ResidueStatsAccumulator) = accumulator.stats
+_residue_stats(::Nothing) = ResidueStats()
+
+function _record_residue_presolve_time!(accumulator::_ResidueStatsAccumulator, elapsed::Float64)
+    accumulator.stats.residue_presolve_time += elapsed
+    return accumulator
+end
+
+_record_residue_presolve_time!(::Nothing, ::Float64) = nothing
+
 function _insert_new!(ids::Set{Int}, id::Int)
     old_length = length(ids)
     push!(ids, id)
@@ -47,6 +57,8 @@ function _ensure_residue_baseline!(accumulator::_ResidueStatsAccumulator, con::C
     return accumulator
 end
 
+_ensure_residue_baseline!(::Nothing, ::Constraint) = nothing
+
 function _sync_relative_bound_tightening!(accumulator::_ResidueStatsAccumulator)
     values_iter = values(accumulator.relative_tightening_by_constraint_id)
     accumulator.stats.avg_relative_bound_tightening = isempty(values_iter) ?
@@ -55,6 +67,8 @@ function _sync_relative_bound_tightening!(accumulator::_ResidueStatsAccumulator)
     return accumulator
 end
 
+_sync_relative_bound_tightening!(::Nothing) = nothing
+
 function _record_residue_processed!(accumulator::_ResidueStatsAccumulator, con::Constraint)
     _ensure_residue_baseline!(accumulator, con)
     _insert_new!(accumulator.processed_constraint_ids, con.id) &&
@@ -62,21 +76,29 @@ function _record_residue_processed!(accumulator::_ResidueStatsAccumulator, con::
     return accumulator
 end
 
+_record_residue_processed!(::Nothing, ::Constraint) = nothing
+
 function _record_residue_modulus_evaluated!(accumulator::_ResidueStatsAccumulator, con::Constraint)
     _record_residue_processed!(accumulator, con)
     accumulator.stats.num_moduli_evaluated += 1
     return accumulator
 end
 
+_record_residue_modulus_evaluated!(::Nothing, ::Constraint) = nothing
+
 function _record_useful_residue_modulus!(accumulator::_ResidueStatsAccumulator)
     accumulator.stats.num_useful_moduli += 1
     return accumulator
 end
 
+_record_useful_residue_modulus!(::Nothing) = nothing
+
 function _record_residue_infeasibility!(accumulator::_ResidueStatsAccumulator)
     accumulator.stats.infeasibility_detected = true
     return accumulator
 end
+
+_record_residue_infeasibility!(::Nothing) = nothing
 
 function _update_relative_bound_tightening!(
         accumulator::_ResidueStatsAccumulator,
@@ -97,6 +119,8 @@ function _update_relative_bound_tightening!(
     accumulator.relative_tightening_by_constraint_id[con.id] = improvement / baseline_range
     return _sync_relative_bound_tightening!(accumulator)
 end
+
+_update_relative_bound_tightening!(::Nothing, ::Constraint) = nothing
 
 function _record_residue_bound_tightening!(
         accumulator::_ResidueStatsAccumulator,
@@ -125,3 +149,6 @@ function _record_residue_bound_tightening!(
 
     return _update_relative_bound_tightening!(accumulator, con)
 end
+
+_record_residue_bound_tightening!(::Nothing, ::Constraint, ::Float64, ::Float64, ::Bool) =
+    nothing

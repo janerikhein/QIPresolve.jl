@@ -11,6 +11,8 @@ using Test
     include("model_io_tests.jl")
     include("instance_generation_tests.jl")
     include("generate_instance_script_tests.jl")
+    include("residue_modulus_improvement_experiment_script_tests.jl")
+    include("presolve_diophantine_experiment_script_tests.jl")
     include("propagation_tests.jl")
     include("xor_constraint_tests.jl")
     include("xor_model_tests.jl")

@@ -50,6 +50,30 @@ function _ParityStatsAccumulator(stats::ParityStats = ParityStats())
     )
 end
 
+_parity_stats(accumulator::_ParityStatsAccumulator) = accumulator.stats
+_parity_stats(::Nothing) = ParityStats()
+
+function _record_parity_presolve_time!(accumulator::_ParityStatsAccumulator, elapsed::Float64)
+    accumulator.stats.parity_presolve_time += elapsed
+    return accumulator
+end
+
+_record_parity_presolve_time!(::Nothing, ::Float64) = nothing
+
+function _record_parity_presolve_round!(accumulator::_ParityStatsAccumulator)
+    accumulator.stats.num_parity_presolve_rounds += 1
+    return accumulator
+end
+
+_record_parity_presolve_round!(::Nothing) = nothing
+
+function _record_parity_presolve_phase!(accumulator::_ParityStatsAccumulator)
+    accumulator.stats.num_parity_presolve_phases += 1
+    return accumulator
+end
+
+_record_parity_presolve_phase!(::Nothing) = nothing
+
 function _sync_boolean_variable_counts!(accumulator::_ParityStatsAccumulator)
     stats = accumulator.stats
     stats.num_parity_variables = length(accumulator.parity_variable_ids)

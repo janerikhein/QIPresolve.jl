@@ -850,19 +850,19 @@ function _residue_constraint_result(
         tightened_to_equality::Bool,
         processed::Bool,
         infeasible::Bool,
-        stats_accumulator::_ResidueStatsAccumulator,
+        stats_accumulator::Union{Nothing, _ResidueStatsAccumulator},
     )
     return (
         changed = changed,
         tightened_to_equality = tightened_to_equality,
         processed = processed,
         infeasible = infeasible,
-        residue_stats = stats_accumulator.stats,
+        residue_stats = _residue_stats(stats_accumulator),
     )
 end
 
 """
-    residue_presolve_constraint!(model, con, moduli; treewidth_threshold=typemax(Int))
+    residue_presolve_constraint!(model, con, moduli; treewidth_threshold=typemax(Int), collect_stats=false)
     residue_presolve_constraint!(model, con, moduli, stats_accumulator; treewidth_threshold=typemax(Int))
 
 Run residue-based bound tightening on a single constraint of `model`.
@@ -880,8 +880,9 @@ function residue_presolve_constraint!(
         con::Constraint,
         moduli::AbstractVector{<:Integer};
         treewidth_threshold::Integer = typemax(Int),
+        collect_stats::Bool = false,
     )
-    stats_accumulator = _ResidueStatsAccumulator()
+    stats_accumulator = collect_stats ? _ResidueStatsAccumulator() : nothing
     return residue_presolve_constraint!(
         model,
         con,
@@ -895,7 +896,7 @@ function residue_presolve_constraint!(
         model::QPModel,
         con::Constraint,
         moduli::AbstractVector{<:Integer},
-        stats_accumulator::_ResidueStatsAccumulator;
+        stats_accumulator::Union{Nothing, _ResidueStatsAccumulator};
         treewidth_threshold::Integer = typemax(Int),
     )
     start_time = time()
@@ -908,7 +909,7 @@ function residue_presolve_constraint!(
             treewidth_threshold = treewidth_threshold,
         )
     finally
-        stats_accumulator.stats.residue_presolve_time += time() - start_time
+        _record_residue_presolve_time!(stats_accumulator, time() - start_time)
     end
 end
 
@@ -916,7 +917,7 @@ function _residue_presolve_constraint_impl!(
         model::QPModel,
         con::Constraint,
         moduli::AbstractVector{<:Integer},
-        stats_accumulator::_ResidueStatsAccumulator;
+        stats_accumulator::Union{Nothing, _ResidueStatsAccumulator};
         treewidth_threshold::Integer,
     )
     model.infeasible && return _residue_constraint_result(

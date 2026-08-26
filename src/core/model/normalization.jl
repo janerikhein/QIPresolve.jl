@@ -406,12 +406,12 @@ function _constraint_coefficient_key(con::Constraint)
         end
     end
 
-    return (lin_terms = Tuple(lin_terms), quad_terms = Tuple(quad_terms))
+    return (lin_terms = lin_terms, quad_terms = quad_terms)
 end
 
 function _negated_constraint_key(key)
-    lin_terms = Tuple((var_id, -coeff) for (var_id, coeff) in key.lin_terms)
-    quad_terms = Tuple((var_i, var_j, -coeff) for (var_i, var_j, coeff) in key.quad_terms)
+    lin_terms = [(var_id, -coeff) for (var_id, coeff) in key.lin_terms]
+    quad_terms = [(var_i, var_j, -coeff) for (var_i, var_j, coeff) in key.quad_terms]
     return (lin_terms = lin_terms, quad_terms = quad_terms)
 end
 

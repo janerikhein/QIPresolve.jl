@@ -72,8 +72,8 @@ function _quad_expr_state_signature(qe::QuadExpr)
 
     return (
         constant = qe.constant,
-        lin_terms = Tuple(lin_terms),
-        quad_terms = Tuple(quad_terms),
+        lin_terms = lin_terms,
+        quad_terms = quad_terms,
     )
 end
 
@@ -89,8 +89,8 @@ end
 function _model_state_signature(model::QPModel)
     var_terms = sort!(collect((var_id, var.lb, var.ub) for (var_id, var) in model.vars))
     return (
-        vars = Tuple(var_terms),
-        cons = Tuple(_constraint_state_signature(con) for con in model.cons),
+        vars = var_terms,
+        cons = [_constraint_state_signature(con) for con in model.cons],
         obj = _quad_expr_state_signature(model.obj_expr),
         infeasible = model.infeasible,
     )
@@ -397,7 +397,7 @@ function parity_presolve_phase!(
     stats_accumulator::Union{Nothing, _ParityStatsAccumulator},
 )
     model.infeasible && return (changed = false, fixed_parities = 0, pattern_rewritten_vars = 0)
-    stats_accumulator !== nothing && (stats_accumulator.stats.num_parity_presolve_phases += 1)
+    _record_parity_presolve_phase!(stats_accumulator)
 
     before_normalization = _model_state_signature(model)
     normalize!(model, postsolver; aggregate_parallel = false)
@@ -453,13 +453,15 @@ function parity_presolve_phase!(
         end
     end
 
-    substitution_effect_snapshot = _parity_substitution_effect_snapshot(model)
+    substitution_effect_snapshot = stats_accumulator === nothing ?
+        nothing :
+        _parity_substitution_effect_snapshot(model)
     parities_fixed = fix_parities!(model, propagator, postsolver, stats_accumulator)
     pattern_rewritten_vars = fix_parity_patterns!(model, propagator, postsolver, stats_accumulator)
 
     before_post_normalization = _model_state_signature(model)
     normalize!(model, postsolver; aggregate_parallel = false)
-    if parities_fixed > 0 || pattern_rewritten_vars > 0
+    if stats_accumulator !== nothing && (parities_fixed > 0 || pattern_rewritten_vars > 0)
         _record_parity_substitution_effects!(stats_accumulator, substitution_effect_snapshot, model)
     end
     normalization_changed =
@@ -471,16 +473,21 @@ function parity_presolve_phase!(
     return (changed = changed, fixed_parities = parities_fixed, pattern_rewritten_vars = pattern_rewritten_vars)
 end
 
-parity_presolve!(model::QPModel) = parity_presolve!(model, nothing)
+function parity_presolve!(model::QPModel; collect_stats::Bool = false)
+    return parity_presolve!(model, nothing; collect_stats = collect_stats)
+end
 
-parity_presolve!(
+function parity_presolve!(
     model::QPModel,
-    propagator::PropagationManager,
-) = parity_presolve!(model, propagator, nothing)
+    propagator::PropagationManager;
+    collect_stats::Bool = false,
+)
+    return parity_presolve!(model, propagator, nothing; collect_stats = collect_stats)
+end
 
 """
-    parity_presolve!(model, postsolver=nothing)
-    parity_presolve!(model, propagator, postsolver=nothing)
+    parity_presolve!(model, postsolver=nothing; collect_stats=false)
+    parity_presolve!(model, propagator, postsolver=nothing; collect_stats=false)
 
 Run parity presolve to a fixed point.
 
@@ -493,6 +500,7 @@ fresh propagation manager; the three-argument form reuses `propagator`.
 - `propagator`: Optional propagation manager reused across phases.
 - `postsolver`: Optional `ParityPostsolver` that records reconstruction data
   across all phases.
+- `collect_stats`: Whether to allocate and update parity presolve statistics.
 
 # Returns
 - A named tuple with fields `changed`, `domains_changed`,
@@ -511,23 +519,34 @@ fresh propagation manager; the three-argument form reuses `propagator`.
 # See also
 - [`parity_presolve_phase!`](@ref)
 """
-function parity_presolve!(model::QPModel, postsolver::Union{Nothing, ParityPostsolver})
-    return parity_presolve!(model, PropagationManager(VarId[]), postsolver)
-end
-
 function parity_presolve!(
     model::QPModel,
-    propagator::PropagationManager,
-    postsolver::Union{Nothing, ParityPostsolver},
+    postsolver::Union{Nothing, ParityPostsolver};
+    collect_stats::Bool = false,
 )
-    return parity_presolve!(model, propagator, postsolver, _ParityStatsAccumulator())
+    return parity_presolve!(
+        model,
+        PropagationManager(VarId[]),
+        postsolver;
+        collect_stats = collect_stats,
+    )
+end
+
+function parity_presolve!(
+    model::QPModel,
+    propagator::PropagationManager,
+    postsolver::Union{Nothing, ParityPostsolver};
+    collect_stats::Bool = false,
+)
+    stats_accumulator = collect_stats ? _ParityStatsAccumulator() : nothing
+    return parity_presolve!(model, propagator, postsolver, stats_accumulator)
 end
 
 function parity_presolve!(
     model::QPModel,
     propagator::PropagationManager,
     postsolver::Union{Nothing, ParityPostsolver},
-    stats_accumulator::_ParityStatsAccumulator,
+    stats_accumulator::Union{Nothing, _ParityStatsAccumulator},
 )
     before_state = _model_state_signature(model)
     before_domains = _var_domain_snapshot(model)
@@ -541,7 +560,7 @@ function parity_presolve!(
             fixed_parities = 0,
             pattern_rewritten_vars = 0,
             infeasible = true,
-            parity_stats = stats_accumulator.stats,
+            parity_stats = _parity_stats(stats_accumulator),
         )
     end
 
@@ -550,7 +569,7 @@ function parity_presolve!(
     pattern_rewritten_vars = 0
 
     start_time = time()
-    stats_accumulator.stats.num_parity_presolve_rounds += 1
+    _record_parity_presolve_round!(stats_accumulator)
 
     try
         _record_tracked_constraints!(stats_accumulator, model)
@@ -578,9 +597,9 @@ function parity_presolve!(
             fixed_parities = fixed_parities,
             pattern_rewritten_vars = pattern_rewritten_vars,
             infeasible = model.infeasible,
-            parity_stats = stats_accumulator.stats,
+            parity_stats = _parity_stats(stats_accumulator),
         )
     finally
-        stats_accumulator.stats.parity_presolve_time += time() - start_time
+        _record_parity_presolve_time!(stats_accumulator, time() - start_time)
     end
 end

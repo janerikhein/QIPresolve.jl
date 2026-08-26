@@ -76,6 +76,14 @@ function parity_stats_single_distance_model()
     return parity_stats_model(vars, [con])
 end
 
+function parity_stats_are_default(stats::PC.ParityStats)
+    defaults = PC.ParityStats()
+    return all(
+        getfield(stats, field) == getfield(defaults, field)
+        for field in fieldnames(PC.ParityStats)
+    )
+end
+
 @testset "ParityStats defaults and no-op parity presolve" begin
     defaults = PC.ParityStats()
 
@@ -106,10 +114,19 @@ end
 
     result = PC.parity_presolve!(model)
     stats = result.parity_stats
-
     @test stats isa PC.ParityStats
     @test !result.changed
     @test !model.infeasible
+    @test parity_stats_are_default(result.parity_stats)
+
+    collecting_con = parity_stats_constraint([], [(1.0, 1), (1.0, 2)], -Inf, 3.0)
+    collecting_model = parity_stats_model(deepcopy(vars), [collecting_con])
+    result = PC.parity_presolve!(collecting_model; collect_stats = true)
+    stats = result.parity_stats
+
+    @test stats isa PC.ParityStats
+    @test !result.changed
+    @test !collecting_model.infeasible
     @test stats.num_parity_presolve_rounds == 1
     @test stats.num_parity_presolve_phases == 1
     @test stats.num_parity_constraints_generated == 0
@@ -119,6 +136,19 @@ end
     @test stats.parity_presolve_time >= 0.0
     @test !stats.infeasibility_detected
     @test stats.infeasibility_source == :none
+end
+
+@testset "ParityStats skips explicit nothing accumulator" begin
+    model = parity_stats_pattern_model()
+    propagator = PC.PropagationManager(PC.VarId[])
+    postsolver = PC.ParityPostsolver(keys(model.vars))
+
+    result = PC.parity_presolve!(model, propagator, postsolver, nothing)
+
+    @test result.changed
+    @test result.domains_changed
+    @test result.pattern_rewritten_vars == 2
+    @test parity_stats_are_default(result.parity_stats)
 end
 
 @testset "ParityStats records generated rows and canonical conjunction variables" begin
@@ -195,7 +225,7 @@ end
 @testset "ParityStats records fixed parity substitution effects" begin
     model = parity_stats_linearized_fixed_model()
 
-    result = PC.parity_presolve!(model)
+    result = PC.parity_presolve!(model; collect_stats = true)
     stats = result.parity_stats
 
     @test result.fixed_parities == 2
@@ -219,7 +249,7 @@ end
 @testset "ParityStats records pattern substitutions and split xor-and rows" begin
     pattern_model = parity_stats_pattern_model()
 
-    pattern_result = PC.parity_presolve!(pattern_model)
+    pattern_result = PC.parity_presolve!(pattern_model; collect_stats = true)
     pattern_stats = pattern_result.parity_stats
 
     @test pattern_result.pattern_rewritten_vars == 2
@@ -243,7 +273,7 @@ end
     @test build_acc.stats.num_conjunction_variables == 4
     @test build_acc.stats.num_total_boolean_variables == 8
 
-    split_result = PC.parity_presolve!(single_distance_model)
+    split_result = PC.parity_presolve!(single_distance_model; collect_stats = true)
     split_stats = split_result.parity_stats
 
     @test split_result.pattern_rewritten_vars == 4
@@ -282,7 +312,7 @@ end
     con3 = parity_stats_constraint([], [(1.0, 1), (1.0, 3)], 1.0, 1.0)
     propagation_model = parity_stats_model(vars, [con1, con2, con3])
 
-    result = PC.parity_presolve!(propagation_model)
+    result = PC.parity_presolve!(propagation_model; collect_stats = true)
     stats = result.parity_stats
 
     @test propagation_model.infeasible
@@ -320,6 +350,21 @@ end
         model;
         residue_strategy = :powers_of_two,
         residue_threshold = 2,
+    )
+    @test result isa QIPresolve.PresolveResult
+    @test parity_stats_are_default(result.parity_stats)
+
+    collecting_vars = Dict{PC.VarId, PC.IntVar}(
+        1 => PC.IntVar(0.0, 1.0),
+        2 => PC.IntVar(0.0, 1.0),
+    )
+    collecting_con = parity_stats_constraint([(2.0, 1, 2)], [], 1.0, 2.0)
+    collecting_model = parity_stats_model(collecting_vars, [collecting_con])
+    result = QIPresolve.presolve!(
+        collecting_model;
+        residue_strategy = :powers_of_two,
+        residue_threshold = 2,
+        collect_stats = true,
     )
     stats = result.parity_stats
 
