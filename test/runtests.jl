@@ -12,6 +12,8 @@ using Test
     include("instance_generation_tests.jl")
     include("generate_instance_script_tests.jl")
     include("residue_modulus_improvement_experiment_script_tests.jl")
+    include("residue_moduli_family_constraint_experiment_script_tests.jl")
+    include("exact_bound_reduction_family_experiment_script_tests.jl")
     include("presolve_diophantine_experiment_script_tests.jl")
     include("presolve_lattice_experiment_script_tests.jl")
     include("propagation_tests.jl")
