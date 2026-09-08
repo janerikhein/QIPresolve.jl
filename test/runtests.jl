@@ -13,6 +13,8 @@ using Test
     include("generate_instance_script_tests.jl")
     include("residue_modulus_improvement_experiment_script_tests.jl")
     include("residue_moduli_family_constraint_experiment_script_tests.jl")
+    include("residue_random_quadratic_constraint_experiment_script_tests.jl")
+    include("residue_random_distance_constraint_experiment_script_tests.jl")
     include("exact_bound_reduction_family_experiment_script_tests.jl")
     include("presolve_diophantine_experiment_script_tests.jl")
     include("presolve_lattice_experiment_script_tests.jl")

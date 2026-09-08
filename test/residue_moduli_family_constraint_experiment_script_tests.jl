@@ -15,8 +15,8 @@ function residue_family_csv_table(path::AbstractString)
     return split(first(lines), ','), split.(lines[2:end], ','; keepempty = true)
 end
 
-function residue_family_strategy_map(limit::Int = 64)
-    return Dict(spec.name => spec.moduli for spec in ResidueFamilyExperimentScript.strategy_specs(limit))
+function residue_family_strategy_map()
+    return Dict(spec.name => spec.moduli for spec in ResidueFamilyExperimentScript.strategy_specs())
 end
 
 function nonzero_coefficients(con)
@@ -30,17 +30,21 @@ end
 @testset "residue moduli family experiment builds requested families" begin
     strategies = residue_family_strategy_map()
 
-    @test strategies["primes"] == [
+    @test strategies["primes_lt_64"] == [
         2, 3, 5, 7, 11, 13, 17, 19, 23,
         29, 31, 37, 41, 43, 47, 53, 59, 61,
     ]
-    @test strategies["prime_powers"] == [
+    @test strategies["prime_powers_lt_64"] == [
         2, 3, 4, 5, 7, 8, 9, 11, 13,
         16, 17, 19, 23, 25, 27, 29, 31,
         32, 37, 41, 43, 47, 49, 53, 59, 61,
     ]
-    @test !(64 in strategies["prime_powers"])
-    @test strategies["full"] == collect(2:63)
+    @test !(64 in strategies["prime_powers_lt_64"])
+    @test strategies["all_2_to_63"] == collect(2:63)
+    @test strategies["primes_lt_128"][end] == 127
+    @test 64 in strategies["prime_powers_lt_128"]
+    @test !(128 in strategies["prime_powers_lt_128"])
+    @test strategies["all_2_to_128"] == collect(2:128)
 end
 
 @testset "residue moduli family experiment generation is deterministic" begin
@@ -51,6 +55,7 @@ end
             seed_base = 123,
             domain_lb = 0,
             domain_ub = 3,
+            density = 0.1,
             treewidth_threshold = 3,
         ),
     )
@@ -74,7 +79,7 @@ end
     end
 
     result = ResidueFamilyExperimentScript.run_experiment(config)
-    @test length(result.rows) == 3
+    @test length(result.rows) == 6
     @test all(row -> row.constraints == 2, result.rows)
     @test result.generated_constraints[5] == 2
 end
@@ -85,8 +90,7 @@ end
         "--nvars", "5",
         "--domain-lb", "0",
         "--domain-ub", "2",
-        "--diag-probability", "1.0",
-        "--linear-probability", "1.0",
+        "--density", "1.0",
         "--max-distinct-coeffs", "1",
     ])
 
@@ -105,11 +109,9 @@ end
         "--nvars", "2",
         "--domain-lb", "0",
         "--domain-ub", "2",
-        "--extra-edge-probability", "0.0",
         "--coeff-lb", "4",
         "--coeff-ub", "4",
-        "--diag-probability", "0.0",
-        "--linear-probability", "0.0",
+        "--density", "0.0",
     ])
 
     sample = ResidueFamilyExperimentScript.generate_constraint_sample(config, 2, 789)
@@ -160,16 +162,25 @@ end
 
         @test result.config.count == 2
         @test result.config.nvars == [5]
-        @test result.config.exact == false
+        @test result.config.density == 0.1
         @test [row.strategy for row in result.rows] == [
-            "primes",
-            "prime_powers",
-            "full",
+            "primes_lt_64",
+            "prime_powers_lt_64",
+            "all_2_to_63",
+            "primes_lt_128",
+            "prime_powers_lt_128",
+            "all_2_to_128",
         ]
         @test all(row -> row.constraints == 2, result.rows)
         @test all(row -> row.bounds_considered == 4, result.rows)
-        @test all(row -> 0.0 <= row.fraction_bounds_tightened <= 1.0, result.rows)
-        @test all(row -> 0.0 <= row.avg_relative_bound_reduction <= 1.0, result.rows)
+        @test all(row -> row.exact_assignments_per_constraint == 1024, result.rows)
+        @test all(row -> 0.0 <= row.pct_bounds_fully_tightened_to_optimal <= 100.0, result.rows)
+        @test all(row -> 0.0 <= row.pct_bounds_tightened <= 100.0, result.rows)
+        @test all(
+            row -> row.pct_bounds_fully_tightened_to_optimal <= row.pct_bounds_tightened,
+            result.rows,
+        )
+        @test all(row -> row.avg_bound_gap_to_optimal >= 0.0, result.rows)
         @test all(row -> row.total_residue_time_sec >= 0.0, result.rows)
         @test all(row -> row.avg_wall_time_sec_per_constraint >= 0.0, result.rows)
         @test isfile(output_path)
@@ -177,19 +188,25 @@ end
         header, rows = residue_family_csv_table(output_path)
         @test header == [
             "nvars",
-            "modulus_limit",
+            "density",
+            "domain_lb",
+            "domain_ub",
+            "max_distinct_coeffs",
             "strategy",
             "moduli",
             "num_moduli",
             "constraints",
             "bounds_considered",
+            "exact_assignments_per_constraint",
+            "bounds_fully_tightened_to_optimal",
+            "pct_bounds_fully_tightened_to_optimal",
             "bounds_tightened",
-            "fraction_bounds_tightened",
-            "avg_relative_bound_reduction",
+            "pct_bounds_tightened",
+            "avg_bound_gap_to_optimal",
             "total_residue_time_sec",
             "avg_wall_time_sec_per_constraint",
         ]
-        @test length(rows) == 3
+        @test length(rows) == 6
         @test all(row -> length(row) == length(header), rows)
     end
 end
@@ -205,43 +222,54 @@ end
             "--domain-lb", "0",
             "--domain-ub", "1",
             "--treewidth-threshold", "3",
-            "--exact=true",
             "--output", output_path,
         ])
 
-        @test length(result.rows) == 6
+        @test length(result.rows) == 12
         n4_rows = filter(row -> row.nvars == 4, result.rows)
         n5_rows = filter(row -> row.nvars == 5, result.rows)
-        @test length(n4_rows) == 3
-        @test length(n5_rows) == 3
+        @test length(n4_rows) == 6
+        @test length(n5_rows) == 6
         @test all(row -> row.exact_assignments_per_constraint == 16, n4_rows)
         @test all(row -> row.exact_assignments_per_constraint == 32, n5_rows)
-        @test all(row -> 0.0 <= row.optimal_avg_relative_bound_reduction <= 1.0, n4_rows)
-        @test all(row -> 0.0 <= row.fraction_bounds_tightened_to_optimal <= 1.0, n4_rows)
-        @test all(row -> 0.0 <= row.optimal_avg_relative_bound_reduction <= 1.0, n5_rows)
-        @test all(row -> 0.0 <= row.fraction_bounds_tightened_to_optimal <= 1.0, n5_rows)
+        @test all(row -> 0.0 <= row.pct_bounds_fully_tightened_to_optimal <= 100.0, n4_rows)
+        @test all(row -> 0.0 <= row.pct_bounds_tightened <= 100.0, n4_rows)
+        @test all(
+            row -> row.pct_bounds_fully_tightened_to_optimal <= row.pct_bounds_tightened,
+            n4_rows,
+        )
+        @test all(row -> row.avg_bound_gap_to_optimal >= 0.0, n4_rows)
+        @test all(row -> 0.0 <= row.pct_bounds_fully_tightened_to_optimal <= 100.0, n5_rows)
+        @test all(row -> 0.0 <= row.pct_bounds_tightened <= 100.0, n5_rows)
+        @test all(
+            row -> row.pct_bounds_fully_tightened_to_optimal <= row.pct_bounds_tightened,
+            n5_rows,
+        )
+        @test all(row -> row.avg_bound_gap_to_optimal >= 0.0, n5_rows)
         @test isfile(output_path)
 
         header, rows = residue_family_csv_table(output_path)
         @test header == [
             "nvars",
-            "modulus_limit",
+            "density",
+            "domain_lb",
+            "domain_ub",
+            "max_distinct_coeffs",
             "strategy",
             "moduli",
             "num_moduli",
             "constraints",
             "bounds_considered",
+            "exact_assignments_per_constraint",
+            "bounds_fully_tightened_to_optimal",
+            "pct_bounds_fully_tightened_to_optimal",
             "bounds_tightened",
-            "fraction_bounds_tightened",
-            "avg_relative_bound_reduction",
+            "pct_bounds_tightened",
+            "avg_bound_gap_to_optimal",
             "total_residue_time_sec",
             "avg_wall_time_sec_per_constraint",
-            "exact_assignments_per_constraint",
-            "optimal_avg_relative_bound_reduction",
-            "bounds_tightened_to_optimal",
-            "fraction_bounds_tightened_to_optimal",
         ]
-        @test length(rows) == 6
+        @test length(rows) == 12
         @test all(row -> length(row) == length(header), rows)
     end
 end

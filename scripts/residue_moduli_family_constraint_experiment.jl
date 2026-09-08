@@ -17,20 +17,17 @@ import QIPresolve as QIP
 import QIPresolve.PresolvingCore as PC
 
 const DEFAULT_COUNT = 1000
-const DEFAULT_NVARS = (3,4,5,6,7,8,9,10)
+const DEFAULT_NVARS = (7,)
 const DEFAULT_SEED_BASE = 30000
 const DEFAULT_SEED_STEP = 1
 const DEFAULT_DOMAIN_LB = 0
 const DEFAULT_DOMAIN_UB = 1
-const DEFAULT_EXTRA_EDGE_PROBABILITY = 0.1
+const DEFAULT_DENSITY = 0.1
 const DEFAULT_COEFF_LB = -50
 const DEFAULT_COEFF_UB = 50
-const DEFAULT_MAX_DISTINCT_COEFFS = 10
-const DEFAULT_DIAG_PROBABILITY = 0.1
-const DEFAULT_LINEAR_PROBABILITY = 0.1
+const DEFAULT_MAX_DISTINCT_COEFFS = 50
 const DEFAULT_OFFSET_LB = 1
 const DEFAULT_OFFSET_UB = 10
-const DEFAULT_MODULUS_LIMIT = 64
 
 const QuadTerm = Tuple{Float64, PC.VarId, PC.VarId}
 const LinTerm = Tuple{Float64, PC.VarId}
@@ -41,15 +38,9 @@ const CLI_KEYS = Dict(
     "n-vars" => :nvars,
     "seed-base" => :seed_base,
     "seed-step" => :seed_step,
-    "diag-probability" => :diag_probability,
-    "diagonal-probability" => :diag_probability,
-    "linear-probability" => :linear_probability,
-    "lin-probability" => :linear_probability,
+    "density" => :density,
     "domain-lb" => :domain_lb,
     "domain-ub" => :domain_ub,
-    "extra-edge-probability" => :extra_edge_probability,
-    "extra-edge-prob" => :extra_edge_probability,
-    "extra-edges" => :extra_edge_probability,
     "coeff-lb" => :coeff_lb,
     "coeff-ub" => :coeff_ub,
     "max-distinct-coeffs" => :max_distinct_coeffs,
@@ -60,34 +51,24 @@ const CLI_KEYS = Dict(
     "offset-ub" => :offset_ub,
     "offset-max" => :offset_ub,
     "bound-offset-ub" => :offset_ub,
-    "modulus-limit" => :modulus_limit,
-    "moduli-limit" => :modulus_limit,
-    "max-modulus" => :modulus_limit,
     "treewidth-threshold" => :treewidth_threshold,
-    "exact" => :exact,
     "output" => :output_path,
 )
-
-const BOOL_KEYS = Set([:exact])
 
 Base.@kwdef struct CliConfig
     count::Int = DEFAULT_COUNT
     nvars::Vector{Int} = collect(DEFAULT_NVARS)
     seed_base::Int = DEFAULT_SEED_BASE
     seed_step::Int = DEFAULT_SEED_STEP
-    diag_probability::Float64 = DEFAULT_DIAG_PROBABILITY
-    linear_probability::Float64 = DEFAULT_LINEAR_PROBABILITY
+    density::Float64 = DEFAULT_DENSITY
     domain_lb::Int = DEFAULT_DOMAIN_LB
     domain_ub::Int = DEFAULT_DOMAIN_UB
-    extra_edge_probability::Float64 = DEFAULT_EXTRA_EDGE_PROBABILITY
     coeff_lb::Int = DEFAULT_COEFF_LB
     coeff_ub::Int = DEFAULT_COEFF_UB
-    max_distinct_coeffs::Union{Nothing, Int} = DEFAULT_MAX_DISTINCT_COEFFS
+    max_distinct_coeffs::Int = DEFAULT_MAX_DISTINCT_COEFFS
     offset_lb::Int = DEFAULT_OFFSET_LB
     offset_ub::Int = DEFAULT_OFFSET_UB
-    modulus_limit::Int = DEFAULT_MODULUS_LIMIT
     treewidth_threshold::Int = QIP.PresolveConfig.DEFAULT_PRESOLVE_TREEWIDTH_THRESHOLD
-    exact::Bool = false
     output_path::Union{Nothing, String} = nothing
 end
 
@@ -118,16 +99,18 @@ end
 
 Base.@kwdef mutable struct StrategyResult
     nvars::Int
-    modulus_limit::Int
+    density::Float64
+    domain_lb::Int
+    domain_ub::Int
+    max_distinct_coeffs::Int
     name::String
     moduli::Vector{Int}
     constraints::Int = 0
     bounds_tightened::Int = 0
-    total_relative_bound_reduction::Float64 = 0.0
+    bounds_fully_tightened_to_optimal::Int = 0
+    total_bound_gap_to_optimal::Float64 = 0.0
     total_residue_time_sec::Float64 = 0.0
     exact_assignments_per_constraint::Union{Missing, Int} = missing
-    total_optimal_relative_bound_reduction::Float64 = 0.0
-    bounds_tightened_to_optimal::Int = 0
 end
 
 function usage()
@@ -140,19 +123,15 @@ function usage()
       --nvars list                    Comma-separated n values, default $(join(DEFAULT_NVARS, ","))
       --seed-base n                   First random seed, default $DEFAULT_SEED_BASE
       --seed-step n                   Seed increment, default $DEFAULT_SEED_STEP
-      --diag-probability p            Diagonal x_i^2 term probability, default $DEFAULT_DIAG_PROBABILITY
-      --linear-probability p          Linear x_i term probability, default $DEFAULT_LINEAR_PROBABILITY
+      --density p                     Probability for each non-tree edge, diagonal term, and linear term, default $DEFAULT_DENSITY
       --domain-lb n                   Variable lower bound, default $DEFAULT_DOMAIN_LB
       --domain-ub n                   Variable upper bound, default $DEFAULT_DOMAIN_UB
-      --extra-edge-probability p      Probability for each non-tree edge, default $DEFAULT_EXTRA_EDGE_PROBABILITY
       --coeff-lb n                    Coefficient lower bound, default $DEFAULT_COEFF_LB
       --coeff-ub n                    Coefficient upper bound, default $DEFAULT_COEFF_UB
-      --max-distinct-coeffs n         Max distinct coefficients per generated constraint, default all
+      --max-distinct-coeffs n         Max distinct coefficients per generated constraint, default $DEFAULT_MAX_DISTINCT_COEFFS
       --offset-lb n                   Lower offset bound for sampled constraint slack, default $DEFAULT_OFFSET_LB
       --offset-ub n                   Upper offset bound for sampled constraint slack, default $DEFAULT_OFFSET_UB
-      --modulus-limit n               Exclusive upper limit for generated moduli, default $DEFAULT_MODULUS_LIMIT
       --treewidth-threshold n         Residue DP treewidth threshold
-      --exact[=true|false]            Compute exact optimal tightening for all nvars values, default false
       --output path                   Optional CSV output path
       -h, --help                      Show this help
     """
@@ -168,13 +147,6 @@ function parse_float(value::AbstractString, name::AbstractString)::Float64
     parsed = tryparse(Float64, strip(value))
     parsed === nothing && error("Invalid $name: $value")
     return parsed
-end
-
-function parse_bool(value::AbstractString, name::AbstractString)::Bool
-    normalized = lowercase(strip(value))
-    normalized in ("true", "1", "yes", "y", "on") && return true
-    normalized in ("false", "0", "no", "n", "off") && return false
-    error("Invalid $name: $value. Expected true/false, 1/0, yes/no, or on/off.")
 end
 
 function parse_int_list(value::AbstractString, name::AbstractString)::Vector{Int}
@@ -225,14 +197,7 @@ function parse_raw_options(args::Vector{String})
             raw_key, value = split(arg, "="; limit = 2)
             consumed = 1
         else
-            key = _lookup_option_key(raw_key)
-            if key in BOOL_KEYS && (index == length(args) || startswith(args[index + 1], "--"))
-                value = "true"
-                options[key] = value
-                index += consumed
-                continue
-            end
-
+            _lookup_option_key(raw_key)
             index < length(args) || error("Missing value for option $raw_key")
             value = args[index + 1]
             consumed = 2
@@ -263,19 +228,13 @@ function validate_config(config::CliConfig)
     isempty(config.nvars) && error("nvars must contain at least one value")
     all(>=(1), config.nvars) || error("all nvars values must be >= 1")
     config.seed_step >= 0 || error("seed_step must be >= 0")
-    validate_probability("diag_probability", config.diag_probability)
-    validate_probability("linear_probability", config.linear_probability)
+    validate_probability("density", config.density)
     config.domain_lb <= config.domain_ub || error("domain_lb must be <= domain_ub")
-    validate_probability("extra_edge_probability", config.extra_edge_probability)
     config.coeff_lb <= config.coeff_ub || error("coeff_lb must be <= coeff_ub")
     coefficient_values(config)
-    if config.max_distinct_coeffs !== nothing
-        config.max_distinct_coeffs >= 1 ||
-            error("max_distinct_coeffs must be >= 1")
-    end
+    config.max_distinct_coeffs >= 1 || error("max_distinct_coeffs must be >= 1")
     config.offset_lb >= 0 || error("offset_lb must be >= 0")
     config.offset_lb <= config.offset_ub || error("offset_lb must be <= offset_ub")
-    config.modulus_limit >= 3 || error("modulus_limit must be >= 3")
     config.treewidth_threshold >= 0 || error("treewidth_threshold must be >= 0")
 
     return config
@@ -292,20 +251,12 @@ function build_config(args::Vector{String})::Union{Nothing, CliConfig}
             collect(DEFAULT_NVARS),
         seed_base = parse_int(get(options, :seed_base, string(DEFAULT_SEED_BASE)), "seed_base"),
         seed_step = parse_int(get(options, :seed_step, string(DEFAULT_SEED_STEP)), "seed_step"),
-        diag_probability = parse_float(
-            get(options, :diag_probability, string(DEFAULT_DIAG_PROBABILITY)),
-            "diag_probability",
-        ),
-        linear_probability = parse_float(
-            get(options, :linear_probability, string(DEFAULT_LINEAR_PROBABILITY)),
-            "linear_probability",
+        density = parse_float(
+            get(options, :density, string(DEFAULT_DENSITY)),
+            "density",
         ),
         domain_lb = parse_int(get(options, :domain_lb, string(DEFAULT_DOMAIN_LB)), "domain_lb"),
         domain_ub = parse_int(get(options, :domain_ub, string(DEFAULT_DOMAIN_UB)), "domain_ub"),
-        extra_edge_probability = parse_float(
-            get(options, :extra_edge_probability, string(DEFAULT_EXTRA_EDGE_PROBABILITY)),
-            "extra_edge_probability",
-        ),
         coeff_lb = parse_int(get(options, :coeff_lb, string(DEFAULT_COEFF_LB)), "coeff_lb"),
         coeff_ub = parse_int(get(options, :coeff_ub, string(DEFAULT_COEFF_UB)), "coeff_ub"),
         max_distinct_coeffs = haskey(options, :max_distinct_coeffs) ?
@@ -313,10 +264,6 @@ function build_config(args::Vector{String})::Union{Nothing, CliConfig}
             DEFAULT_MAX_DISTINCT_COEFFS,
         offset_lb = parse_int(get(options, :offset_lb, string(DEFAULT_OFFSET_LB)), "offset_lb"),
         offset_ub = parse_int(get(options, :offset_ub, string(DEFAULT_OFFSET_UB)), "offset_ub"),
-        modulus_limit = parse_int(
-            get(options, :modulus_limit, string(DEFAULT_MODULUS_LIMIT)),
-            "modulus_limit",
-        ),
         treewidth_threshold = parse_int(
             get(
                 options,
@@ -325,7 +272,6 @@ function build_config(args::Vector{String})::Union{Nothing, CliConfig}
             ),
             "treewidth_threshold",
         ),
-        exact = parse_bool(get(options, :exact, "false"), "exact"),
         output_path = haskey(options, :output_path) ? abspath(options[:output_path]) : nothing,
     )
 
@@ -376,11 +322,18 @@ function full_moduli_less_than(limit::Int)
     return 2 <= upper ? collect(2:upper) : Int[]
 end
 
-function strategy_specs(modulus_limit::Int = DEFAULT_MODULUS_LIMIT)
+function full_moduli_through(upper::Int)
+    return 2 <= upper ? collect(2:upper) : Int[]
+end
+
+function strategy_specs()
     return [
-        StrategySpec("primes", primes_less_than(modulus_limit)),
-        StrategySpec("prime_powers", prime_power_moduli_less_than(modulus_limit)),
-        StrategySpec("full", full_moduli_less_than(modulus_limit)),
+        StrategySpec("primes_lt_64", primes_less_than(64)),
+        StrategySpec("prime_powers_lt_64", prime_power_moduli_less_than(64)),
+        StrategySpec("all_2_to_63", full_moduli_less_than(64)),
+        StrategySpec("primes_lt_128", primes_less_than(128)),
+        StrategySpec("prime_powers_lt_128", prime_power_moduli_less_than(128)),
+        StrategySpec("all_2_to_128", full_moduli_through(128)),
     ]
 end
 
@@ -413,8 +366,8 @@ function random_spanning_tree_edges(rng::AbstractRNG, nvars::Int)
     return edges
 end
 
-function random_tree_plus_edges(rng::AbstractRNG, nvars::Int, extra_edge_probability::Float64)
-    validate_probability("extra_edge_probability", extra_edge_probability)
+function random_tree_plus_edges(rng::AbstractRNG, nvars::Int, density::Float64)
+    validate_probability("density", density)
     tree_edges = random_spanning_tree_edges(rng, nvars)
     edge_set = Set(tree_edges)
 
@@ -429,7 +382,7 @@ function random_tree_plus_edges(rng::AbstractRNG, nvars::Int, extra_edge_probabi
 
     edges = copy(tree_edges)
     for edge in candidates
-        rand(rng) < extra_edge_probability || continue
+        rand(rng) < density || continue
         push!(edges, edge)
     end
 
@@ -442,8 +395,6 @@ end
 
 function coefficient_palette(rng::AbstractRNG, config::CliConfig)
     coefficients = coefficient_values(config)
-    config.max_distinct_coeffs === nothing && return coefficients
-
     palette_size = min(config.max_distinct_coeffs, length(coefficients))
     palette_size == length(coefficients) && return coefficients
 
@@ -473,7 +424,7 @@ function generate_constraint_sample(
         con_id::Int = 1,
     )
     coefficients = coefficient_palette(rng, config)
-    edges = random_tree_plus_edges(rng, nvars, config.extra_edge_probability)
+    edges = random_tree_plus_edges(rng, nvars, config.density)
 
     quad_terms = QuadTerm[]
     sizehint!(quad_terms, length(edges) + nvars)
@@ -483,7 +434,7 @@ function generate_constraint_sample(
     end
 
     for var_id in 1:nvars
-        rand(rng) < config.diag_probability || continue
+        rand(rng) < config.density || continue
         coefficient = _sample_nonzero_coefficient(rng, coefficients)
         push!(quad_terms, (Float64(coefficient), var_id, var_id))
     end
@@ -491,7 +442,7 @@ function generate_constraint_sample(
     lin_terms = LinTerm[]
     sizehint!(lin_terms, nvars)
     for var_id in 1:nvars
-        rand(rng) < config.linear_probability || continue
+        rand(rng) < config.density || continue
         coefficient = _sample_nonzero_coefficient(rng, coefficients)
         push!(lin_terms, (Float64(coefficient), var_id))
     end
@@ -724,17 +675,25 @@ function exact_bound_tightening(con::PC.Constraint, var_bounds::Dict{PC.VarId, P
     )
 end
 
-function bounds_tightened_to_optimal_count(before, con::PC.Constraint, exact::ExactBoundTightening)
+function bounds_fully_tightened_to_optimal_count(
+        before,
+        con::PC.Constraint,
+        exact::ExactBoundTightening,
+    )
     count = 0
     isfinite(before.lhs) && con.lhs > before.lhs && con.lhs == exact.lhs && (count += 1)
     isfinite(before.rhs) && con.rhs < before.rhs && con.rhs == exact.rhs && (count += 1)
     return count
 end
 
+function bound_gap_to_optimal(con::PC.Constraint, exact::ExactBoundTightening)
+    return abs(con.lhs - exact.lhs) + abs(con.rhs - exact.rhs)
+end
+
 function record_strategy_trial!(
         result::StrategyResult,
         sample::ConstraintSample,
-        exact::Union{Nothing, ExactBoundTightening},
+        exact::ExactBoundTightening,
         treewidth_threshold::Int,
     )
     trial_con = deepcopy(sample.con)
@@ -752,35 +711,40 @@ function record_strategy_trial!(
 
     result.constraints += 1
     result.bounds_tightened += tightened_bound_count(before, trial_con)
-    result.total_relative_bound_reduction += relative_bound_reduction(before, trial_con)
-
-    if exact !== nothing
-        result.exact_assignments_per_constraint = exact.assignment_count
-        result.total_optimal_relative_bound_reduction += exact.relative_bound_reduction
-        result.bounds_tightened_to_optimal += bounds_tightened_to_optimal_count(before, trial_con, exact)
-    end
+    result.bounds_fully_tightened_to_optimal +=
+        bounds_fully_tightened_to_optimal_count(before, trial_con, exact)
+    result.total_bound_gap_to_optimal += bound_gap_to_optimal(trial_con, exact)
+    result.exact_assignments_per_constraint = exact.assignment_count
 
     return result
 end
 
 rate(numerator::Real, denominator::Int) = denominator == 0 ? 0.0 : numerator / denominator
-rate(::Missing, ::Int) = missing
 
-function base_row(result::StrategyResult)
+function result_row(result::StrategyResult)
     bounds_considered = 2 * result.constraints
     return (
         nvars = result.nvars,
-        modulus_limit = result.modulus_limit,
+        density = result.density,
+        domain_lb = result.domain_lb,
+        domain_ub = result.domain_ub,
+        max_distinct_coeffs = result.max_distinct_coeffs,
         strategy = result.name,
         moduli = join(result.moduli, " "),
         num_moduli = length(result.moduli),
         constraints = result.constraints,
         bounds_considered = bounds_considered,
+        exact_assignments_per_constraint = result.exact_assignments_per_constraint,
+        bounds_fully_tightened_to_optimal = result.bounds_fully_tightened_to_optimal,
+        pct_bounds_fully_tightened_to_optimal = rate(
+            100.0 * result.bounds_fully_tightened_to_optimal,
+            bounds_considered,
+        ),
         bounds_tightened = result.bounds_tightened,
-        fraction_bounds_tightened = rate(result.bounds_tightened, bounds_considered),
-        avg_relative_bound_reduction = rate(
-            result.total_relative_bound_reduction,
-            result.constraints,
+        pct_bounds_tightened = rate(100.0 * result.bounds_tightened, bounds_considered),
+        avg_bound_gap_to_optimal = rate(
+            result.total_bound_gap_to_optimal,
+            bounds_considered,
         ),
         total_residue_time_sec = result.total_residue_time_sec,
         avg_wall_time_sec_per_constraint = rate(
@@ -790,39 +754,16 @@ function base_row(result::StrategyResult)
     )
 end
 
-function row_with_exact(result::StrategyResult)
-    base = base_row(result)
-    has_exact = !ismissing(result.exact_assignments_per_constraint)
-    bounds_considered = 2 * result.constraints
-    return merge(
-        base,
-        (
-            exact_assignments_per_constraint = has_exact ?
-                result.exact_assignments_per_constraint :
-                missing,
-            optimal_avg_relative_bound_reduction = has_exact ?
-                rate(result.total_optimal_relative_bound_reduction, result.constraints) :
-                missing,
-            bounds_tightened_to_optimal = has_exact ?
-                result.bounds_tightened_to_optimal :
-                missing,
-            fraction_bounds_tightened_to_optimal = has_exact ?
-                rate(result.bounds_tightened_to_optimal, bounds_considered) :
-                missing,
-        ),
-    )
-end
-
-function result_rows(results::Vector{StrategyResult}, include_exact::Bool)
+function result_rows(results::Vector{StrategyResult})
     rows = NamedTuple[]
     for result in results
-        push!(rows, include_exact ? row_with_exact(result) : base_row(result))
+        push!(rows, result_row(result))
     end
     return rows
 end
 
 function run_experiment(config::CliConfig)
-    strategies = strategy_specs(config.modulus_limit)
+    strategies = strategy_specs()
     results = StrategyResult[]
     generated_constraints = Dict{Int, Int}(nvars => 0 for nvars in config.nvars)
 
@@ -830,7 +771,10 @@ function run_experiment(config::CliConfig)
         n_results = [
             StrategyResult(
                 nvars = nvars,
-                modulus_limit = config.modulus_limit,
+                density = config.density,
+                domain_lb = config.domain_lb,
+                domain_ub = config.domain_ub,
+                max_distinct_coeffs = config.max_distinct_coeffs,
                 name = strategy.name,
                 moduli = copy(strategy.moduli),
             )
@@ -847,9 +791,7 @@ function run_experiment(config::CliConfig)
             )
             generated_constraints[nvars] += 1
 
-            exact = config.exact ?
-                exact_bound_tightening(sample.con, sample.model.vars) :
-                nothing
+            exact = exact_bound_tightening(sample.con, sample.model.vars)
 
             for result in n_results
                 record_strategy_trial!(
@@ -864,7 +806,7 @@ function run_experiment(config::CliConfig)
         append!(results, n_results)
     end
 
-    rows = result_rows(results, config.exact)
+    rows = result_rows(results)
     return (
         config = config,
         strategies = strategies,
@@ -887,19 +829,13 @@ function print_config(result)
     println("nvars = $(join(config.nvars, ","))")
     println("seed_base = $(config.seed_base)")
     println("seed_step = $(config.seed_step)")
-    println("diag_probability = $(config.diag_probability)")
-    println("linear_probability = $(config.linear_probability)")
+    println("density = $(config.density)")
     println("domain = $(config.domain_lb):$(config.domain_ub)")
-    println("extra_edge_probability = $(config.extra_edge_probability)")
     println("coeff_range = $(config.coeff_lb):$(config.coeff_ub) excluding 0")
-    max_distinct_coeffs = config.max_distinct_coeffs === nothing ?
-        "all" :
-        string(config.max_distinct_coeffs)
-    println("max_distinct_coeffs = $max_distinct_coeffs")
+    println("max_distinct_coeffs = $(config.max_distinct_coeffs)")
     println("offset_range = $(config.offset_lb):$(config.offset_ub)")
-    println("modulus_limit = $(config.modulus_limit)")
     println("treewidth_threshold = $(config.treewidth_threshold)")
-    println("exact = $(config.exact)")
+    println("exact_enumeration = true")
     for nvars in config.nvars
         println("generated_constraints[$nvars] = $(result.generated_constraints[nvars])")
     end
@@ -907,69 +843,30 @@ function print_config(result)
     return nothing
 end
 
-function _fmt_missing(value)
-    return ismissing(value) ? "" : string(value)
-end
-
-function _fmt_float(value)
-    return ismissing(value) ? "" : @sprintf("%.6f", value)
-end
-
-function print_table(rows; include_exact::Bool)
-    if include_exact
+function print_table(rows)
+    @printf(
+        "%8s %-26s %10s %12s %14s %14s %14s %14s\n",
+        "nvars",
+        "strategy",
+        "n_moduli",
+        "constraints",
+        "pct_optimal",
+        "pct_tight",
+        "avg_gap",
+        "avg_time_sec",
+    )
+    for row in rows
         @printf(
-            "%8s %-26s %10s %12s %12s %14s %14s %14s %14s %14s\n",
-            "nvars",
-            "strategy",
-            "n_moduli",
-            "constraints",
-            "bounds_tight",
-            "frac_bounds",
-            "avg_rel_red",
-            "avg_time_sec",
-            "opt_avg_red",
-            "frac_opt",
+            "%8d %-26s %10d %12d %14.6f %14.6f %14.6f %14.6f\n",
+            row.nvars,
+            row.strategy,
+            row.num_moduli,
+            row.constraints,
+            row.pct_bounds_fully_tightened_to_optimal,
+            row.pct_bounds_tightened,
+            row.avg_bound_gap_to_optimal,
+            row.avg_wall_time_sec_per_constraint,
         )
-        for row in rows
-            @printf(
-                "%8d %-26s %10d %12d %12d %14.6f %14.6f %14.6f %14s %14s\n",
-                row.nvars,
-                row.strategy,
-                row.num_moduli,
-                row.constraints,
-                row.bounds_tightened,
-                row.fraction_bounds_tightened,
-                row.avg_relative_bound_reduction,
-                row.avg_wall_time_sec_per_constraint,
-                _fmt_float(row.optimal_avg_relative_bound_reduction),
-                _fmt_float(row.fraction_bounds_tightened_to_optimal),
-            )
-        end
-    else
-        @printf(
-            "%8s %-26s %10s %12s %12s %14s %14s %14s\n",
-            "nvars",
-            "strategy",
-            "n_moduli",
-            "constraints",
-            "bounds_tight",
-            "frac_bounds",
-            "avg_rel_red",
-            "avg_time_sec",
-        )
-        for row in rows
-            @printf(
-                "%8d %-26s %10d %12d %12d %14.6f %14.6f %14.6f\n",
-                row.nvars,
-                row.strategy,
-                row.num_moduli,
-                row.constraints,
-                row.bounds_tightened,
-                row.fraction_bounds_tightened,
-                row.avg_relative_bound_reduction,
-                row.avg_wall_time_sec_per_constraint,
-            )
-        end
     end
     return nothing
 end
@@ -980,7 +877,7 @@ function main(args::Vector{String} = copy(ARGS))
 
     result = run_experiment(config)
     print_config(result)
-    print_table(result.rows; include_exact = config.exact)
+    print_table(result.rows)
 
     if config.output_path !== nothing
         write_csv(config.output_path, result.rows)

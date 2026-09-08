@@ -10,23 +10,23 @@ end
 module ExactBoundReductionFamilyExperiment
 
 using CSV
+import Graphs
 using Printf
 using Random
+using Statistics
 
 import QIPresolve.PresolvingCore as PC
 
-const DEFAULT_COUNT = 50
-const DEFAULT_NVARS = (3,4,5,6,7,8,9,10)
+const DEFAULT_COUNT = 100
+const DEFAULT_NVARS = (5,)
 const DEFAULT_SEED_BASE = 30000
 const DEFAULT_SEED_STEP = 1
 const DEFAULT_DOMAIN_LB = 0
-const DEFAULT_DOMAIN_UBS = (1,2,3,4)
-const DEFAULT_EXTRA_EDGE_PROBABILITY = 0.1
+const DEFAULT_DOMAIN_UBS = (3,)
+const DEFAULT_DENSITY = (0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1.0)
 const DEFAULT_COEFF_LB = -50
 const DEFAULT_COEFF_UB = 50
-const DEFAULT_MAX_DISTINCT_COEFFS = (5,10,15,20,25)
-const DEFAULT_DIAG_PROBABILITY = 0.1
-const DEFAULT_LINEAR_PROBABILITY = 0.1
+const DEFAULT_MAX_DISTINCT_COEFFS = (50,)
 const DEFAULT_OFFSET_LB = 1
 const DEFAULT_OFFSET_UB = 10
 
@@ -39,16 +39,11 @@ const CLI_KEYS = Dict(
     "n-vars" => :nvars,
     "seed-base" => :seed_base,
     "seed-step" => :seed_step,
-    "diag-probability" => :diag_probability,
-    "diagonal-probability" => :diag_probability,
-    "linear-probability" => :linear_probability,
-    "lin-probability" => :linear_probability,
+    "density" => :densities,
+    "densities" => :densities,
     "domain-lb" => :domain_lb,
     "domain-ub" => :domain_ubs,
     "domain-ubs" => :domain_ubs,
-    "extra-edge-probability" => :extra_edge_probability,
-    "extra-edge-prob" => :extra_edge_probability,
-    "extra-edges" => :extra_edge_probability,
     "coeff-lb" => :coeff_lb,
     "coeff-ub" => :coeff_ub,
     "max-distinct-coeffs" => :max_distinct_coeffs,
@@ -59,7 +54,8 @@ const CLI_KEYS = Dict(
     "offset-ub" => :offset_ub,
     "offset-max" => :offset_ub,
     "bound-offset-ub" => :offset_ub,
-    "output" => :output_path,
+    "output" => :output_dir,
+    "output-dir" => :output_dir,
 )
 
 Base.@kwdef struct CliConfig
@@ -67,17 +63,15 @@ Base.@kwdef struct CliConfig
     nvars::Vector{Int} = collect(DEFAULT_NVARS)
     seed_base::Int = DEFAULT_SEED_BASE
     seed_step::Int = DEFAULT_SEED_STEP
-    diag_probability::Float64 = DEFAULT_DIAG_PROBABILITY
-    linear_probability::Float64 = DEFAULT_LINEAR_PROBABILITY
+    densities::Vector{Float64} = collect(DEFAULT_DENSITY)
     domain_lb::Int = DEFAULT_DOMAIN_LB
     domain_ubs::Vector{Int} = collect(DEFAULT_DOMAIN_UBS)
-    extra_edge_probability::Float64 = DEFAULT_EXTRA_EDGE_PROBABILITY
     coeff_lb::Int = DEFAULT_COEFF_LB
     coeff_ub::Int = DEFAULT_COEFF_UB
     max_distinct_coeffs::Vector{Int} = collect(DEFAULT_MAX_DISTINCT_COEFFS)
     offset_lb::Int = DEFAULT_OFFSET_LB
     offset_ub::Int = DEFAULT_OFFSET_UB
-    output_path::Union{Nothing, String} = nothing
+    output_dir::Union{Nothing, String} = nothing
 end
 
 struct ConstraintSample
@@ -104,12 +98,13 @@ end
 
 Base.@kwdef mutable struct SweepResult
     nvars::Int
+    density::Float64
     domain_lb::Int
     domain_ub::Int
     max_distinct_coeffs::Int
     constraints::Int = 0
-    exact_assignments_per_constraint::Union{Missing, Int} = missing
-    total_optimal_relative_bound_reduction::Float64 = 0.0
+    optimal_relative_bound_reductions::Vector{Float64} = Float64[]
+    treewidths::Vector{Int} = Int[]
     total_exact_time_sec::Float64 = 0.0
 end
 
@@ -121,19 +116,17 @@ function usage()
     Options:
       --count n                       Constraints per parameter combination, default $DEFAULT_COUNT
       --nvars list                    Comma-separated n values, default $(join(DEFAULT_NVARS, ","))
+      --density, --densities list     Comma-separated density values, default $(join(DEFAULT_DENSITY, ","))
       --domain-ubs list               Comma-separated upper bounds, default $(join(DEFAULT_DOMAIN_UBS, ","))
       --seed-base n                   First random seed, default $DEFAULT_SEED_BASE
       --seed-step n                   Seed increment, default $DEFAULT_SEED_STEP
-      --diag-probability p            Diagonal x_i^2 term probability, default $DEFAULT_DIAG_PROBABILITY
-      --linear-probability p          Linear x_i term probability, default $DEFAULT_LINEAR_PROBABILITY
       --domain-lb n                   Variable lower bound, default $DEFAULT_DOMAIN_LB
-      --extra-edge-probability p      Probability for each non-tree edge, default $DEFAULT_EXTRA_EDGE_PROBABILITY
       --coeff-lb n                    Coefficient lower bound, default $DEFAULT_COEFF_LB
       --coeff-ub n                    Coefficient upper bound, default $DEFAULT_COEFF_UB
       --max-distinct-coeffs list      Comma-separated max distinct coefficients, default $(join(DEFAULT_MAX_DISTINCT_COEFFS, ","))
       --offset-lb n                   Lower offset bound for sampled constraint slack, default $DEFAULT_OFFSET_LB
       --offset-ub n                   Upper offset bound for sampled constraint slack, default $DEFAULT_OFFSET_UB
-      --output path                   Optional CSV output path
+      --output, --output-dir path     Optional CSV output directory
       -h, --help                      Show this help
     """
 end
@@ -168,6 +161,18 @@ function parse_int_list(value::AbstractString, name::AbstractString)::Vector{Int
     end
 
     isempty(values) && error("$name must contain at least one integer")
+    return values
+end
+
+function parse_float_list(value::AbstractString, name::AbstractString)::Vector{Float64}
+    normalized = replace(strip(value), " " => "")
+    values = Float64[]
+
+    for part in split(normalized, ","; keepempty = false)
+        push!(values, parse_float(part, name))
+    end
+
+    isempty(values) && error("$name must contain at least one float")
     return values
 end
 
@@ -228,11 +233,10 @@ function validate_config(config::CliConfig)
     isempty(config.nvars) && error("nvars must contain at least one value")
     all(>=(1), config.nvars) || error("all nvars values must be >= 1")
     config.seed_step >= 0 || error("seed_step must be >= 0")
-    validate_probability("diag_probability", config.diag_probability)
-    validate_probability("linear_probability", config.linear_probability)
+    isempty(config.densities) && error("densities must contain at least one value")
+    foreach(density -> validate_probability("density", density), config.densities)
     config.domain_lb <= minimum(config.domain_ubs) ||
         error("all domain_ubs values must be >= domain_lb")
-    validate_probability("extra_edge_probability", config.extra_edge_probability)
     config.coeff_lb <= config.coeff_ub || error("coeff_lb must be <= coeff_ub")
     coefficient_values(config)
     isempty(config.max_distinct_coeffs) &&
@@ -256,22 +260,13 @@ function build_config(args::Vector{String})::Union{Nothing, CliConfig}
             collect(DEFAULT_NVARS),
         seed_base = parse_int(get(options, :seed_base, string(DEFAULT_SEED_BASE)), "seed_base"),
         seed_step = parse_int(get(options, :seed_step, string(DEFAULT_SEED_STEP)), "seed_step"),
-        diag_probability = parse_float(
-            get(options, :diag_probability, string(DEFAULT_DIAG_PROBABILITY)),
-            "diag_probability",
-        ),
-        linear_probability = parse_float(
-            get(options, :linear_probability, string(DEFAULT_LINEAR_PROBABILITY)),
-            "linear_probability",
-        ),
+        densities = haskey(options, :densities) ?
+            parse_float_list(options[:densities], "densities") :
+            collect(DEFAULT_DENSITY),
         domain_lb = parse_int(get(options, :domain_lb, string(DEFAULT_DOMAIN_LB)), "domain_lb"),
         domain_ubs = haskey(options, :domain_ubs) ?
             parse_int_list(options[:domain_ubs], "domain_ubs") :
             collect(DEFAULT_DOMAIN_UBS),
-        extra_edge_probability = parse_float(
-            get(options, :extra_edge_probability, string(DEFAULT_EXTRA_EDGE_PROBABILITY)),
-            "extra_edge_probability",
-        ),
         coeff_lb = parse_int(get(options, :coeff_lb, string(DEFAULT_COEFF_LB)), "coeff_lb"),
         coeff_ub = parse_int(get(options, :coeff_ub, string(DEFAULT_COEFF_UB)), "coeff_ub"),
         max_distinct_coeffs = haskey(options, :max_distinct_coeffs) ?
@@ -279,7 +274,7 @@ function build_config(args::Vector{String})::Union{Nothing, CliConfig}
             collect(DEFAULT_MAX_DISTINCT_COEFFS),
         offset_lb = parse_int(get(options, :offset_lb, string(DEFAULT_OFFSET_LB)), "offset_lb"),
         offset_ub = parse_int(get(options, :offset_ub, string(DEFAULT_OFFSET_UB)), "offset_ub"),
-        output_path = haskey(options, :output_path) ? abspath(options[:output_path]) : nothing,
+        output_dir = haskey(options, :output_dir) ? abspath(options[:output_dir]) : nothing,
     )
 
     return validate_config(config)
@@ -314,8 +309,8 @@ function random_spanning_tree_edges(rng::AbstractRNG, nvars::Int)
     return edges
 end
 
-function random_tree_plus_edges(rng::AbstractRNG, nvars::Int, extra_edge_probability::Float64)
-    validate_probability("extra_edge_probability", extra_edge_probability)
+function random_tree_plus_edges(rng::AbstractRNG, nvars::Int, density::Float64)
+    validate_probability("density", density)
     tree_edges = random_spanning_tree_edges(rng, nvars)
     edge_set = Set(tree_edges)
 
@@ -330,7 +325,7 @@ function random_tree_plus_edges(rng::AbstractRNG, nvars::Int, extra_edge_probabi
 
     edges = copy(tree_edges)
     for edge in candidates
-        rand(rng) < extra_edge_probability || continue
+        rand(rng) < density || continue
         push!(edges, edge)
     end
 
@@ -374,11 +369,13 @@ function generate_constraint_sample(
         nvars::Int,
         domain_ub::Int,
         max_distinct_coeffs::Int;
+        density::Float64 = only(config.densities),
         seed::Int = 0,
         con_id::Int = 1,
     )
+    validate_probability("density", density)
     coefficients = coefficient_palette(rng, config, max_distinct_coeffs)
-    edges = random_tree_plus_edges(rng, nvars, config.extra_edge_probability)
+    edges = random_tree_plus_edges(rng, nvars, density)
 
     quad_terms = QuadTerm[]
     sizehint!(quad_terms, length(edges) + nvars)
@@ -388,7 +385,7 @@ function generate_constraint_sample(
     end
 
     for var_id in 1:nvars
-        rand(rng) < config.diag_probability || continue
+        rand(rng) < density || continue
         coefficient = _sample_nonzero_coefficient(rng, coefficients)
         push!(quad_terms, (Float64(coefficient), var_id, var_id))
     end
@@ -396,7 +393,7 @@ function generate_constraint_sample(
     lin_terms = LinTerm[]
     sizehint!(lin_terms, nvars)
     for var_id in 1:nvars
-        rand(rng) < config.linear_probability || continue
+        rand(rng) < density || continue
         coefficient = _sample_nonzero_coefficient(rng, coefficients)
         push!(lin_terms, (Float64(coefficient), var_id))
     end
@@ -430,6 +427,7 @@ function generate_constraint_sample(
         domain_ub::Int,
         max_distinct_coeffs::Int,
         seed::Int;
+        density::Float64 = only(config.densities),
         con_id::Int = 1,
     )
     return generate_constraint_sample(
@@ -438,6 +436,7 @@ function generate_constraint_sample(
         nvars,
         domain_ub,
         max_distinct_coeffs;
+        density = density,
         seed = seed,
         con_id = con_id,
     )
@@ -592,34 +591,99 @@ function combination_seed(config::CliConfig, combination_index::Int, constraint_
         ((combination_index - 1) * config.count + constraint_index) * config.seed_step
 end
 
+function _component_graph(graph::Graphs.SimpleGraph{Int}, component::Vector{Int})
+    component_pos = Dict(vertex => index for (index, vertex) in enumerate(component))
+    component_graph = Graphs.SimpleGraph{Int}(length(component))
+
+    for (first_index, first_vertex) in enumerate(component)
+        for second_vertex in @view component[(first_index + 1):end]
+            Graphs.has_edge(graph, first_vertex, second_vertex) || continue
+            Graphs.add_edge!(
+                component_graph,
+                component_pos[first_vertex],
+                component_pos[second_vertex],
+            )
+        end
+    end
+
+    return component_graph
+end
+
+function _treewidth_component(
+        graph::Graphs.SimpleGraph{Int},
+        component::Vector{Int},
+        var_ids::Vector{PC.VarId},
+    )
+    component_var_ids = var_ids[component]
+    var_id_to_pos = Dict(var_id => position for (position, var_id) in enumerate(component_var_ids))
+    pc_component = PC.NonSingleton(
+        _component_graph(graph, component),
+        var_id_to_pos,
+        component_var_ids,
+        Dict{PC.VarId, Int}(),
+        Dict{Tuple{PC.VarId, PC.VarId}, Int}(),
+    )
+    return PC.tree_decomposition_width(PC.minimum_degree_tree_decomposition(pc_component))
+end
+
+function constraint_treewidth(con::PC.Constraint)
+    var_ids = sort!(collect(PC.vars(con.qe)))
+    length(var_ids) <= 1 && return 0
+
+    graph = Graphs.SimpleGraph{Int}(length(var_ids))
+    for first_index in 1:(length(var_ids) - 1)
+        first_var_id = var_ids[first_index]
+        for second_index in (first_index + 1):length(var_ids)
+            second_var_id = var_ids[second_index]
+            PC.get_quad_coeff(con.qe, first_var_id, second_var_id) == 0.0 && continue
+            Graphs.add_edge!(graph, first_index, second_index)
+        end
+    end
+
+    Graphs.ne(graph) == 0 && return 0
+
+    width = 0
+    for component in Graphs.connected_components(graph)
+        length(component) <= 1 && continue
+        width = max(width, _treewidth_component(graph, component, var_ids))
+    end
+    return width
+end
+
 function record_trial!(result::SweepResult, sample::ConstraintSample)
     start_time = time()
     exact = exact_bound_tightening(sample.con, sample.model.vars)
     result.total_exact_time_sec += time() - start_time
 
     result.constraints += 1
-    result.exact_assignments_per_constraint = exact.assignment_count
-    result.total_optimal_relative_bound_reduction += exact.relative_bound_reduction
+    push!(result.optimal_relative_bound_reductions, exact.relative_bound_reduction)
+    push!(result.treewidths, constraint_treewidth(sample.con))
     return result
 end
 
 rate(numerator::Real, denominator::Int) = denominator == 0 ? 0.0 : numerator / denominator
-rate(::Missing, ::Int) = missing
+
+function treewidth_bucket_percentages(treewidths::AbstractVector{Int}, constraints::Int)
+    return (
+        tw_1 = rate(100.0 * count(==(1), treewidths), constraints),
+        tw_2 = rate(100.0 * count(==(2), treewidths), constraints),
+        tw_3 = rate(100.0 * count(==(3), treewidths), constraints),
+        tw_ge4 = rate(100.0 * count(>=(4), treewidths), constraints),
+    )
+end
 
 function result_row(result::SweepResult)
+    treewidth_buckets = treewidth_bucket_percentages(result.treewidths, result.constraints)
     return (
         nvars = result.nvars,
+        density = result.density,
         domain_lb = result.domain_lb,
         domain_ub = result.domain_ub,
         max_distinct_coeffs = result.max_distinct_coeffs,
         constraints = result.constraints,
-        exact_assignments_per_constraint = result.exact_assignments_per_constraint,
-        total_optimal_relative_bound_reduction =
-            result.total_optimal_relative_bound_reduction,
-        opt_avg_red = rate(
-            result.total_optimal_relative_bound_reduction,
-            result.constraints,
-        ),
+        opt_avg_red = mean(result.optimal_relative_bound_reductions),
+        opt_std_red = std(result.optimal_relative_bound_reductions),
+        treewidth_buckets...,
         avg_wall_time_sec_per_constraint = rate(
             result.total_exact_time_sec,
             result.constraints,
@@ -635,48 +699,137 @@ function result_rows(results::Vector{SweepResult})
     return rows
 end
 
+function grouped_result_row(
+        field::Symbol,
+        value,
+        constraints::Int,
+        reductions,
+        treewidths,
+        total_time::Float64,
+    )
+    treewidth_buckets = treewidth_bucket_percentages(treewidths, constraints)
+    return NamedTuple{
+        (
+            field,
+            :constraints,
+            :opt_avg_red,
+            :opt_std_red,
+            :tw_1,
+            :tw_2,
+            :tw_3,
+            :tw_ge4,
+            :avg_wall_time_sec_per_constraint,
+        ),
+    }((
+        value,
+        constraints,
+        mean(reductions),
+        std(reductions),
+        treewidth_buckets.tw_1,
+        treewidth_buckets.tw_2,
+        treewidth_buckets.tw_3,
+        treewidth_buckets.tw_ge4,
+        rate(total_time, constraints),
+    ))
+end
+
+function grouped_result_rows(results::Vector{SweepResult}, field::Symbol)
+    reductions_by_value = Dict{Any, Vector{Float64}}()
+    treewidths_by_value = Dict{Any, Vector{Int}}()
+    constraints_by_value = Dict{Any, Int}()
+    total_time_by_value = Dict{Any, Float64}()
+    values = Any[]
+
+    for result in results
+        value = getproperty(result, field)
+        if !haskey(reductions_by_value, value)
+            reductions_by_value[value] = Float64[]
+            treewidths_by_value[value] = Int[]
+            constraints_by_value[value] = 0
+            total_time_by_value[value] = 0.0
+            push!(values, value)
+        end
+
+        append!(reductions_by_value[value], result.optimal_relative_bound_reductions)
+        append!(treewidths_by_value[value], result.treewidths)
+        constraints_by_value[value] += result.constraints
+        total_time_by_value[value] += result.total_exact_time_sec
+    end
+
+    rows = NamedTuple[]
+    for value in values
+        push!(
+            rows,
+            grouped_result_row(
+                field,
+                value,
+                constraints_by_value[value],
+                reductions_by_value[value],
+                treewidths_by_value[value],
+                total_time_by_value[value],
+            ),
+        )
+    end
+    return rows
+end
+
+function aggregate_result_rows(results::Vector{SweepResult})
+    return (
+        by_nvars = grouped_result_rows(results, :nvars),
+        by_density = grouped_result_rows(results, :density),
+        by_domain_ub = grouped_result_rows(results, :domain_ub),
+        by_max_distinct_coeffs = grouped_result_rows(results, :max_distinct_coeffs),
+    )
+end
+
 function run_experiment(config::CliConfig)
     results = SweepResult[]
-    generated_constraints = Dict{Tuple{Int, Int, Int}, Int}()
+    generated_constraints = Dict{Tuple{Int, Float64, Int, Int}, Int}()
     combination_index = 1
 
     for nvars in config.nvars
-        for domain_ub in config.domain_ubs
-            for max_distinct_coeffs in config.max_distinct_coeffs
-                result = SweepResult(
-                    nvars = nvars,
-                    domain_lb = config.domain_lb,
-                    domain_ub = domain_ub,
-                    max_distinct_coeffs = max_distinct_coeffs,
-                )
-                key = (nvars, domain_ub, max_distinct_coeffs)
-                generated_constraints[key] = 0
-
-                for constraint_index in 0:(config.count - 1)
-                    seed = combination_seed(config, combination_index, constraint_index)
-                    sample = generate_constraint_sample(
-                        config,
-                        nvars,
-                        domain_ub,
-                        max_distinct_coeffs,
-                        seed;
-                        con_id = constraint_index + 1,
+        for density in config.densities
+            for domain_ub in config.domain_ubs
+                for max_distinct_coeffs in config.max_distinct_coeffs
+                    result = SweepResult(
+                        nvars = nvars,
+                        density = density,
+                        domain_lb = config.domain_lb,
+                        domain_ub = domain_ub,
+                        max_distinct_coeffs = max_distinct_coeffs,
                     )
-                    generated_constraints[key] += 1
-                    record_trial!(result, sample)
-                end
+                    key = (nvars, density, domain_ub, max_distinct_coeffs)
+                    generated_constraints[key] = 0
 
-                push!(results, result)
-                combination_index += 1
+                    for constraint_index in 0:(config.count - 1)
+                        seed = combination_seed(config, combination_index, constraint_index)
+                        sample = generate_constraint_sample(
+                            config,
+                            nvars,
+                            domain_ub,
+                            max_distinct_coeffs,
+                            seed;
+                            density = density,
+                            con_id = constraint_index + 1,
+                        )
+                        generated_constraints[key] += 1
+                        record_trial!(result, sample)
+                    end
+
+                    push!(results, result)
+                    combination_index += 1
+                end
             end
         end
     end
 
     rows = result_rows(results)
+    aggregate_rows = aggregate_result_rows(results)
     return (
         config = config,
         results = results,
         rows = rows,
+        aggregate_rows = aggregate_rows,
         generated_constraints = generated_constraints,
     )
 end
@@ -685,6 +838,25 @@ function write_csv(path::AbstractString, rows)
     mkpath(dirname(path))
     CSV.write(path, rows)
     return path
+end
+
+function aggregate_output_paths(output_dir::AbstractString)
+    return (
+        by_nvars = joinpath(output_dir, "exact_res_by_nvars.csv"),
+        by_density = joinpath(output_dir, "exact_res_by_density.csv"),
+        by_domain_ub = joinpath(output_dir, "exact_res_by_domain_ub.csv"),
+        by_max_distinct_coeffs = joinpath(output_dir, "exact_res_by_max_distinct_coeffs.csv"),
+    )
+end
+
+function write_aggregate_csvs(output_dir::AbstractString, aggregate_rows)
+    mkpath(output_dir)
+    paths = aggregate_output_paths(output_dir)
+    write_csv(paths.by_nvars, aggregate_rows.by_nvars)
+    write_csv(paths.by_density, aggregate_rows.by_density)
+    write_csv(paths.by_domain_ub, aggregate_rows.by_domain_ub)
+    write_csv(paths.by_max_distinct_coeffs, aggregate_rows.by_max_distinct_coeffs)
+    return paths
 end
 
 function print_config(result)
@@ -697,44 +869,70 @@ function print_config(result)
     println("max_distinct_coeffs = $(join(config.max_distinct_coeffs, ","))")
     println("seed_base = $(config.seed_base)")
     println("seed_step = $(config.seed_step)")
-    println("diag_probability = $(config.diag_probability)")
-    println("linear_probability = $(config.linear_probability)")
-    println("extra_edge_probability = $(config.extra_edge_probability)")
+    println("densities = $(join(config.densities, ","))")
     println("coeff_range = $(config.coeff_lb):$(config.coeff_ub) excluding 0")
     println("offset_range = $(config.offset_lb):$(config.offset_ub)")
+    config.output_dir !== nothing && println("output_dir = $(config.output_dir)")
     println("parameter_combinations = $(length(result.results))")
     println()
     return nothing
 end
 
-function _fmt_missing(value)
-    return ismissing(value) ? "" : string(value)
+function _format_group_value(value)
+    return value isa AbstractFloat ? @sprintf("%.6f", value) : string(value)
 end
 
-function print_table(rows)
+function print_aggregate_table(title::AbstractString, rows, field::Symbol)
+    println(title)
     @printf(
-        "%8s %10s %10s %20s %12s %14s %14s %14s\n",
-        "nvars",
-        "domain_lb",
-        "domain_ub",
-        "max_distinct_coeffs",
+        "%20s %12s %14s %14s %10s %10s %10s %10s %14s\n",
+        string(field),
         "constraints",
-        "assignments",
         "opt_avg_red",
+        "opt_std_red",
+        "tw_1",
+        "tw_2",
+        "tw_3",
+        "tw_ge4",
         "avg_time_sec",
     )
     for row in rows
         @printf(
-            "%8d %10d %10d %20d %12d %14s %14.6f %14.6f\n",
-            row.nvars,
-            row.domain_lb,
-            row.domain_ub,
-            row.max_distinct_coeffs,
+            "%20s %12d %14.6f %14.6f %10.2f %10.2f %10.2f %10.2f %14.6f\n",
+            _format_group_value(getproperty(row, field)),
             row.constraints,
-            _fmt_missing(row.exact_assignments_per_constraint),
             row.opt_avg_red,
+            row.opt_std_red,
+            row.tw_1,
+            row.tw_2,
+            row.tw_3,
+            row.tw_ge4,
             row.avg_wall_time_sec_per_constraint,
         )
+    end
+    return nothing
+end
+
+function print_aggregate_tables(aggregate_rows)
+    print_aggregate_table("Grouped by nvars", aggregate_rows.by_nvars, :nvars)
+    println()
+    print_aggregate_table("Grouped by density", aggregate_rows.by_density, :density)
+    println()
+    print_aggregate_table("Grouped by domain_ub", aggregate_rows.by_domain_ub, :domain_ub)
+    println()
+    print_aggregate_table(
+        "Grouped by max_distinct_coeffs",
+        aggregate_rows.by_max_distinct_coeffs,
+        :max_distinct_coeffs,
+    )
+    return nothing
+end
+
+function print_written_paths(paths)
+    println()
+    println("Wrote CSVs:")
+    for name in propertynames(paths)
+        println("  $(getproperty(paths, name))")
     end
     return nothing
 end
@@ -745,15 +943,15 @@ function main(args::Vector{String} = copy(ARGS))
 
     result = run_experiment(config)
     print_config(result)
-    print_table(result.rows)
+    print_aggregate_tables(result.aggregate_rows)
 
-    if config.output_path !== nothing
-        write_csv(config.output_path, result.rows)
-        println()
-        println("Wrote CSV to $(config.output_path)")
+    output_paths = nothing
+    if config.output_dir !== nothing
+        output_paths = write_aggregate_csvs(config.output_dir, result.aggregate_rows)
+        print_written_paths(output_paths)
     end
 
-    return result
+    return merge(result, (output_paths = output_paths,))
 end
 
 end # module

@@ -1,0 +1,11 @@
+instance_name,file_name,num,created_at,nvars,ncons,seed,eq_constraints,ineq_constraints,p_con_eq,var_threshold_lb,var_threshold_ub,p_var_is_candidate,p_var_bilin,p_var_diag,p_var_lin,coeff_lb,coeff_ub,force_diag_even,force_lin_even,force_feasibility,constraint_slack_range
+test_qip_n10,test_qip_n10.lp,1,2026-09-08T14:31:37,10,20,10000,11,9,0.5,-10,10,0.02,0.4,0.5,0.0,-50,50,false,false,true,-10:10
+test_qip_n20,test_qip_n20.lp,2,2026-09-08T14:31:37,20,40,10100,17,23,0.5,-10,10,0.02,0.4,0.5,0.0,-50,50,false,false,true,-10:10
+test_qip_n30,test_qip_n30.lp,3,2026-09-08T14:31:37,30,60,10200,25,35,0.5,-10,10,0.02,0.4,0.5,0.0,-50,50,false,false,true,-10:10
+test_qip_n40,test_qip_n40.lp,4,2026-09-08T14:31:37,40,80,10300,43,37,0.5,-10,10,0.02,0.4,0.5,0.0,-50,50,false,false,true,-10:10
+test_qip_n50,test_qip_n50.lp,5,2026-09-08T14:31:37,50,100,10400,50,50,0.5,-10,10,0.02,0.4,0.5,0.0,-50,50,false,false,true,-10:10
+test_qip_n60,test_qip_n60.lp,6,2026-09-08T14:31:37,60,120,10500,67,53,0.5,-10,10,0.02,0.4,0.5,0.0,-50,50,false,false,true,-10:10
+test_qip_n70,test_qip_n70.lp,7,2026-09-08T14:31:37,70,140,10600,67,73,0.5,-10,10,0.02,0.4,0.5,0.0,-50,50,false,false,true,-10:10
+test_qip_n80,test_qip_n80.lp,8,2026-09-08T14:31:37,80,160,10700,88,72,0.5,-10,10,0.02,0.4,0.5,0.0,-50,50,false,false,true,-10:10
+test_qip_n90,test_qip_n90.lp,9,2026-09-08T14:31:37,90,180,10800,96,84,0.5,-10,10,0.02,0.4,0.5,0.0,-50,50,false,false,true,-10:10
+test_qip_n100,test_qip_n100.lp,10,2026-09-08T14:31:37,100,200,10900,100,100,0.5,-10,10,0.02,0.4,0.5,0.0,-50,50,false,false,true,-10:10

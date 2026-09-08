@@ -11,6 +11,11 @@ const QIP_INSTANCE_SCRIPT = joinpath(
     "scripts",
     "generate_random_qip_instances.jl",
 )
+const INCREASING_QIP_TEST_INSTANCE_SCRIPT = joinpath(
+    INSTANCE_SCRIPT_REPO_DIR,
+    "scripts",
+    "generate_increasing_random_qip_test_instances.jl",
+)
 
 const EXPECTED_GRAPH_INSTANCE_HEADER = [
     "instance_name",
@@ -38,6 +43,31 @@ const EXPECTED_QIP_INSTANCE_HEADER = [
     "nvars",
     "ncons",
     "seed",
+    "p_con_eq",
+    "var_threshold_lb",
+    "var_threshold_ub",
+    "p_var_is_candidate",
+    "p_var_bilin",
+    "p_var_diag",
+    "p_var_lin",
+    "coeff_lb",
+    "coeff_ub",
+    "force_diag_even",
+    "force_lin_even",
+    "force_feasibility",
+    "constraint_slack_range",
+]
+
+const EXPECTED_INCREASING_QIP_TEST_INSTANCE_HEADER = [
+    "instance_name",
+    "file_name",
+    "num",
+    "created_at",
+    "nvars",
+    "ncons",
+    "seed",
+    "eq_constraints",
+    "ineq_constraints",
     "p_con_eq",
     "var_threshold_lb",
     "var_threshold_ub",
@@ -141,5 +171,50 @@ end
         @test csv_field(header, rows[1], "constraint_slack_range") == "-1:1"
         @test isfile(joinpath(target, "sample_qip_1.lp"))
         @test isfile(joinpath(target, "sample_qip_2.lp"))
+    end
+end
+
+@testset "increasing random QIP test instance script writes 10 mixed-constraint instances" begin
+    mktempdir() do dir
+        target = joinpath(dir, "test_instances")
+        csv_path = joinpath(target, "instances.csv")
+        seed_base = 3000
+        max_attempts = 100
+        args = [
+            "--target", target,
+            "--csv", csv_path,
+            "--seed-base", string(seed_base),
+            "--max-attempts", string(max_attempts),
+        ]
+
+        run_instance_script(INCREASING_QIP_TEST_INSTANCE_SCRIPT, args)
+
+        header, rows = read_csv_table(csv_path)
+        @test String.(header) == EXPECTED_INCREASING_QIP_TEST_INSTANCE_HEADER
+        @test length(rows) == 10
+        @test all(row -> length(row) == length(header), rows)
+
+        for (idx, row) in enumerate(rows)
+            nvars = 10 * idx
+            ncons = 2 * nvars
+            expected_name = "test_qip_n$nvars"
+            expected_file = "$expected_name.lp"
+            seed = parse(Int, csv_field(header, row, "seed"))
+            eq_constraints = parse(Int, csv_field(header, row, "eq_constraints"))
+            ineq_constraints = parse(Int, csv_field(header, row, "ineq_constraints"))
+
+            @test csv_field(header, row, "instance_name") == expected_name
+            @test csv_field(header, row, "file_name") == expected_file
+            @test csv_field(header, row, "num") == string(idx)
+            @test csv_field(header, row, "nvars") == string(nvars)
+            @test csv_field(header, row, "ncons") == string(ncons)
+            @test seed_base + (idx - 1) * max_attempts <= seed
+            @test seed < seed_base + idx * max_attempts
+            @test eq_constraints > 0
+            @test ineq_constraints > 0
+            @test eq_constraints + ineq_constraints == ncons
+            @test csv_field(header, row, "p_con_eq") == "0.5"
+            @test isfile(joinpath(target, expected_file))
+        end
     end
 end
