@@ -4,7 +4,7 @@ set -euo pipefail
 
 instance_dir="$1"
 results_dir="$2"
-args=("${@:3}")
+#args=("${@:3}")
 
 project_dir="/home/htc/jehein/QIPresolve.jl"
 
@@ -19,6 +19,7 @@ for instance_path in "${instances[@]}"; do
     echo "Instance: $instance_name"
 
     log_file="$results_dir/logs/$instance_name.log"
+    error_file="$results_dir/logs/$instance_name.err"
 
     if [ ! -f "$log_file" ]; then
 
@@ -29,10 +30,10 @@ for instance_path in "${instances[@]}"; do
             "$instance_path"
 
         # Append arbitrary arguments passed after INSTANCE_DIR RESULTS_DIR
-        for arg in "${args[@]}"; do
-            printf -v quoted_arg '%q' "$arg"
-            command+=" $quoted_arg"
-        done
+        #for arg in "${args[@]}"; do
+        #    printf -v quoted_arg '%q' "$arg"
+        #    command+=" $quoted_arg"
+        #done
 
         echo "Submitting: $instance_name"
 
@@ -46,8 +47,8 @@ for instance_path in "${instances[@]}"; do
             --threads-per-core=1 \
             --cpus-per-task=1 \
             --exclude=htc-cmp[101-102],htc-cmp104,htc-cmp126,htc-cmp[145-148] \
-            --memory=12000 \
-            --job-name= mod-presolve-qip \
+            --mem=12000M \
+            --job-name="mod-presolve-qip" \
             --mail-user="hein@zib.de" \
             --mail-type=END,FAIL \
             --wrap="$command" \
