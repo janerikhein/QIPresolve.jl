@@ -7,6 +7,7 @@ results_dir="$2"
 #args=("${@:3}")
 
 project_dir="/home/htc/jehein/QIPresolve.jl"
+julia_dir="/home/htc/jehein/software/julia-1.11.7/bin/julia"
 
 # Create output directories
 mkdir -p "$results_dir/logs"
@@ -25,8 +26,9 @@ for instance_path in "${instances[@]}"; do
 
         # Build the Julia command with shell-safe quoting
         printf -v command \
-            'cd %q && julia --project=. scripts/presolve_lp_scip_stats.jl %q' \
+            'cd %q && %q --project=. scripts/presolve_lp_scip_stats.jl %q' \
             "$project_dir" \
+            "$julia_bin" \
             "$instance_path"
 
         # Append arbitrary arguments passed after INSTANCE_DIR RESULTS_DIR
