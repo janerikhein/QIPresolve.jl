@@ -155,7 +155,8 @@ function _residue_presolve_pass_impl!(
 end
 
 """
-    presolve!(model; parity_strategy, residue_strategy, residue_threshold, treewidth_threshold, collect_stats=false)
+    presolve!(model; enable_parity=true, enable_residue=true, parity_strategy,
+              residue_strategy, residue_threshold, treewidth_threshold, collect_stats=false)
 
 Run the combined parity and residue presolve pipeline.
 
@@ -165,20 +166,26 @@ the combined presolver, and returns the mutated model together with postsolve
 reconstruction data. Stats collection is disabled by default; pass
 `collect_stats=true` to populate the returned stats fields. Keyword defaults are
 defined in `QIPresolve.PresolveConfig`.
+
+Set `enable_parity=false` or `enable_residue=false` to skip that reduction
+entirely, including its strategy validation and statistics collection. Shared
+normalization and postsolve tracking still run, even with both reductions off.
 """
 function presolve!(
         model::QPModel;
+        enable_parity::Bool = true,
+        enable_residue::Bool = true,
         parity_strategy = DEFAULT_PRESOLVE_PARITY_STRATEGY,
         residue_strategy::Symbol = DEFAULT_PRESOLVE_RESIDUE_STRATEGY,
         residue_threshold::Integer = DEFAULT_PRESOLVE_RESIDUE_THRESHOLD,
         treewidth_threshold::Integer = DEFAULT_PRESOLVE_TREEWIDTH_THRESHOLD,
         collect_stats::Bool = false,
     )::PresolveResult
-    parity_strategy = _normalize_parity_strategy(parity_strategy)
+    enable_parity && (parity_strategy = _normalize_parity_strategy(parity_strategy))
     postsolver = ParityPostsolver(keys(model.vars))
-    parity_stats_accumulator = collect_stats ? _ParityStatsAccumulator() : nothing
-    residue_stats_accumulator = collect_stats ? _ResidueStatsAccumulator() : nothing
-    moduli = _generate_residue_moduli(residue_strategy, residue_threshold)
+    parity_stats_accumulator = collect_stats && enable_parity ? _ParityStatsAccumulator() : nothing
+    residue_stats_accumulator = collect_stats && enable_residue ? _ResidueStatsAccumulator() : nothing
+    moduli = enable_residue ? _generate_residue_moduli(residue_strategy, residue_threshold) : Int[]
     model.infeasible && return PresolveResult(
         model,
         postsolver,
@@ -196,14 +203,14 @@ function presolve!(
 
     propagator = PropagationManager(VarId[])
 
-    parity_presolve!(
+    enable_parity && parity_presolve!(
         model,
         propagator,
         postsolver,
         parity_stats_accumulator;
         parity_strategy = parity_strategy,
     )
-    model.infeasible && return PresolveResult(
+    (model.infeasible || !enable_residue) && return PresolveResult(
         model,
         postsolver,
         _parity_stats(parity_stats_accumulator),
@@ -219,7 +226,7 @@ function presolve!(
         treewidth_threshold = treewidth_threshold,
     )
 
-    while !model.infeasible && residue_stats.tightened_to_equality
+    while enable_parity && !model.infeasible && residue_stats.tightened_to_equality
         parity_stats = parity_presolve!(
             model,
             propagator,

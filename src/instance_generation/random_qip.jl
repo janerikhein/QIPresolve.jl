@@ -8,7 +8,8 @@ const _RANDOM_QIP_MAX_TERM_TRIES = 1_000
 
 Generate a randomized integer quadratic JuMP model and the sampled reference
 point `x_star`. When `force_feasibility=true`, `x_star` is guaranteed to
-satisfy all variable and constraint bounds.
+satisfy all variable and constraint bounds. When `force_bilin_even=true`, each
+sampled nonzero bilinear coefficient is multiplied by two.
 """
 function generate_random_qip_model(
         nvars::Int,
@@ -24,6 +25,7 @@ function generate_random_qip_model(
         coeff_ub::Integer,
         force_diag_even::Bool,
         force_lin_even::Bool,
+        force_bilin_even::Bool = false,
         force_feasibility::Bool,
         constraint_slack_range::AbstractVector{<:Integer},
         seed::Int = 0,
@@ -42,6 +44,7 @@ function generate_random_qip_model(
         coeff_ub,
         force_diag_even,
         force_lin_even,
+        force_bilin_even,
         force_feasibility,
         constraint_slack_range,
     )
@@ -110,6 +113,7 @@ function _validate_random_qip_config(
         coeff_ub::Integer,
         force_diag_even::Bool,
         force_lin_even::Bool,
+        force_bilin_even::Bool,
         force_feasibility::Bool,
         constraint_slack_range::AbstractVector{<:Integer},
     )
@@ -156,6 +160,7 @@ function _validate_random_qip_config(
         coeff_ub = Int(coeff_ub),
         force_diag_even = force_diag_even,
         force_lin_even = force_lin_even,
+        force_bilin_even = force_bilin_even,
         force_feasibility = force_feasibility,
         slack_values = slack_values,
         feasible_lower_offsets = filter(<=(0), slack_values),
@@ -270,15 +275,17 @@ function _sample_random_qip_constraint_terms(rng::AbstractRNG, nvars::Int, confi
         for (idx, first_id) in enumerate(candidates)
             for second_id in @view candidates[(idx + 1):end]
                 rand(rng) < config.p_var_bilin || continue
+                coeff = _sample_random_qip_coefficient(
+                    rng,
+                    config.coeff_lb,
+                    config.coeff_ub;
+                    force_even = false,
+                )
+                config.force_bilin_even && (coeff *= 2)
                 push!(
                     quad_terms,
                     (
-                        _sample_random_qip_coefficient(
-                            rng,
-                            config.coeff_lb,
-                            config.coeff_ub;
-                            force_even = false,
-                        ),
+                        coeff,
                         first_id,
                         second_id,
                     ),

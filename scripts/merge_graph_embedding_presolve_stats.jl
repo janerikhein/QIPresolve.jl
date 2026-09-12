@@ -27,7 +27,7 @@ const INSTANCE_COLUMNS = [
     "edge_density",
     "infeas_strategy",
     "infeas_base",
-    "box_scale",
+    "box_margin",
 ]
 
 const STATS_COLUMNS = [

@@ -54,16 +54,16 @@ const RANDOM_QIP_KWARGS = (
     p_con_eq = 0.5,
     var_threshold_lb = -10,
     var_threshold_ub = 10,
-    p_var_is_candidate = 0.02,
-    p_var_bilin = 0.4,
-    p_var_diag = 0.5,
-    p_var_lin = 0.0,
+    p_var_is_candidate = 0.3,
+    p_var_bilin = 0.1,
+    p_var_diag = 0.1,
+    p_var_lin = 0.1,
     coeff_lb = -50,
     coeff_ub = 50,
     force_diag_even = false,
     force_lin_even = false,
     force_feasibility = true,
-    constraint_slack_range = collect(-10:10),
+    constraint_slack_range = collect(-5:5),
 )
 
 Base.@kwdef struct GeneratorConfig
@@ -173,8 +173,15 @@ function ensure_output_is_new!(config::GeneratorConfig)
 end
 
 function constraint_counts(model::JuMP.Model)
-    eq_count = length(JuMP.all_constraints(model, JuMP.QuadExpr, MOI.EqualTo{Float64}))
-    ineq_count = length(JuMP.all_constraints(model, JuMP.QuadExpr, MOI.Interval{Float64}))
+    scalar_functions = (JuMP.AffExpr, JuMP.QuadExpr)
+    eq_count = sum(
+        length(JuMP.all_constraints(model, function_type, MOI.EqualTo{Float64}))
+        for function_type in scalar_functions
+    )
+    ineq_count = sum(
+        length(JuMP.all_constraints(model, function_type, MOI.Interval{Float64}))
+        for function_type in scalar_functions
+    )
     return eq_count, ineq_count
 end
 

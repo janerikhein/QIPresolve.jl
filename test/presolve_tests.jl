@@ -8,6 +8,41 @@ const PresolveQuadTerm = Tuple{Float64, PC.VarId, PC.VarId}
 const PresolveLinTerm = Tuple{Float64, PC.VarId}
 const PRESOLVE_NEXT_CON_ID = Ref(0)
 
+@testset "presolve reduction switches" begin
+    function switch_model()
+        return PC.QPModel(Dict(1 => PC.IntVar(0.0, 1.0), 2 => PC.IntVar(0.0, 1.0)),
+            [PC.Constraint(1, PC.QuadExpr(PresolveQuadTerm[], [(1.0, 1), (2.0, 2)]), 1.0, 1.0)],
+            PC.QuadExpr(PresolveQuadTerm[], PresolveLinTerm[]), :min)
+    end
+    for parity in (false, true), residue in (false, true)
+        result = QIPresolve.presolve!(switch_model(); enable_parity = parity,
+            enable_residue = residue, collect_stats = true)
+        @test !result.model.infeasible
+        @test length(result.model.vars) == (parity ? 0 : 2)
+        if parity
+            @test QIPresolve.postsolve(result.postsolver, Dict{Int,Float64}()) == Dict(1 => 1.0, 2 => 0.0)
+        else
+            @test all(getfield(result.parity_stats, f) == getfield(PC.ParityStats(), f)
+                for f in fieldnames(PC.ParityStats))
+        end
+        if !residue
+            @test all(getfield(result.residue_stats, f) == getfield(PC.ResidueStats(), f)
+                for f in fieldnames(PC.ResidueStats))
+        end
+    end
+    @test !QIPresolve.presolve!(switch_model(); enable_parity = false, enable_residue = false,
+        parity_strategy = :invalid, residue_strategy = :invalid).model.infeasible
+    default = QIPresolve.presolve!(switch_model())
+    explicit = QIPresolve.presolve!(switch_model(); enable_parity = true, enable_residue = true)
+    @test PC._model_state_signature(default.model) == PC._model_state_signature(explicit.model)
+
+    # A violated constant row must not disappear and be called feasible.
+    constant_model = PC.QPModel(Dict(1 => PC.IntVar(0.0, 0.0)),
+        [PC.Constraint(1, PC.QuadExpr(PresolveQuadTerm[], [(1.0, 1)]), 1.0, 1.0)],
+        PC.QuadExpr(PresolveQuadTerm[], PresolveLinTerm[]), :min)
+    @test QIPresolve.presolve!(constant_model; enable_parity = false, enable_residue = false).model.infeasible
+end
+
 presolve_next_con_id() = (PRESOLVE_NEXT_CON_ID[] += 1)
 presolve_empty_objective() = PC.QuadExpr(PresolveQuadTerm[], PresolveLinTerm[])
 

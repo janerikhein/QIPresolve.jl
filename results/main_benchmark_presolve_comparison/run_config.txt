@@ -1,0 +1,11 @@
+Julia: 1.11.7
+SCIP: 10.0.0
+Instances: 270
+input_dir = /home/janerik/.julia/dev/QIPresolve/instances/main_benchmark
+output_dir = /home/janerik/.julia/dev/QIPresolve/results/main_benchmark_presolve_comparison
+parity_strategy = full
+residue_strategy = divisor_free
+residue_threshold = 64
+treewidth_threshold = 2
+scip_config = nothing
+limit = 9223372036854775807

@@ -15,7 +15,7 @@ const EXPECTED_MERGED_PRESOLVE_HEADER = [
     "edge_density",
     "infeas_strategy",
     "infeas_base",
-    "box_scale",
+    "box_margin",
     "log_domain_sum_orig",
     "log_domain_sum_ps",
     "num_quadratic_constraints_orig",
@@ -87,9 +87,9 @@ end
         write(
             instances_csv,
             """
-            instance_name,type,num,created_at,n,R,seed,num_anchors,alpha,edge_density,pH2,max_coord_tries,max_tries_H2,infeas_strategy,infeas_base,box_scale
+            instance_name,type,num,created_at,n,R,seed,num_anchors,alpha,edge_density,pH2,max_coord_tries,max_tries_H2,infeas_strategy,infeas_base,box_margin
             residue_case,2_connected,1,2026-08-18T22:41:22,20,100,1,0,0.0,0.2,,10000,,,,
-            parity_case,likely_infeasible,2,2026-08-18T22:41:22,30,100,2,0,0.0,,,,bounding_box,globally_rigid,0.75
+            parity_case,likely_infeasible,2,2026-08-18T22:41:22,30,100,2,0,0.0,,,,bounding_box,globally_rigid,1
             """,
         )
 
@@ -161,7 +161,7 @@ end
         write(
             instances_csv,
             """
-            instance_name,type,num,created_at,n,R,seed,num_anchors,alpha,edge_density,pH2,max_coord_tries,max_tries_H2,infeas_strategy,infeas_base,box_scale
+            instance_name,type,num,created_at,n,R,seed,num_anchors,alpha,edge_density,pH2,max_coord_tries,max_tries_H2,infeas_strategy,infeas_base,box_margin
             missing_case,2_connected,1,2026-08-18T22:41:22,20,100,1,0,0.0,0.2,,10000,,,,
             """,
         )

@@ -14,6 +14,7 @@ export
     generate_globally_rigid_instance,
     generate_2_connected_instance,
     generate_likely_infeasible_embedding_instance,
+    BoundingBoxCandidateRejected,
     # Random QIP generation
     generate_random_qip_model
 

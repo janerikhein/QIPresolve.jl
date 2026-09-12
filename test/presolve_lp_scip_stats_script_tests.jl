@@ -1,145 +1,159 @@
 using Test
-using JuMP: backend
-import JSON
-import QIPresolve.PresolvingCore as PC
-using QIPresolve.InstanceGeneration: generate_random_qip_model
-using QIPresolve.ModelIO: save_moi
+import MathOptInterface as MOI
+import QIPresolve
+import SCIP
 
 include(joinpath(@__DIR__, "..", "scripts", "presolve_lp_scip_stats.jl"))
 const LPStatsScript = Main.PresolveLpScipStatsScript
 
-@testset "presolve LP SCIP stats script writes JSON" begin
+const LP_STATS_FEASIBLE = """
+Maximize
+ obj: x1 + x2
+Subject To
+ c1: x1 + x2 <= 1
+Binary
+ x1
+ x2
+End
+"""
+
+function check_lp_stats_timings(result)
+    times = (result.wall_time_sec, result.qip_presolve_time_sec,
+        result.scip_presolve_time_sec, result.scip_solving_time_sec)
+    @test all(t -> isfinite(t) && t >= 0.0, times)
+    @test result.wall_time_sec >= result.qip_presolve_time_sec
+    # Allow timer resolution differences between Julia and SCIP.
+    @test result.wall_time_sec + 0.01 >= sum(times[2:4])
+end
+
+@testset "LP SCIP comparison prints only the requested metrics" begin
     mktempdir() do dir
         lp_path = joinpath(dir, "tiny.lp")
-        output_path = joinpath(dir, "tiny_stats.json")
+        write(lp_path, LP_STATS_FEASIBLE)
+        output = IOBuffer()
+        results = LPStatsScript.main([lp_path]; io = output)
+        blocks = split(strip(String(take!(output))), "\n\n")
 
-        write(
-            lp_path,
-            """
-            Maximize
-             obj: x1 + x2
-            Subject To
-             c1: x1 + x2 <= 1
-            Binary
-             x1
-             x2
-            End
-            """,
-        )
-
-        result_path = LPStatsScript.main([
-            lp_path,
-            "--output",
-            output_path,
-            "--silent",
-        ])
-
-        @test result_path == output_path
-        @test isfile(output_path)
-
-        data = JSON.parsefile(output_path)
-        required_keys = [
-            "instance_name",
-            "metadata",
-            "parameters",
-            "scip_original",
-            "scip_presolved",
-            "model_loaded",
-            "model_before",
-            "model_after",
-            "parity_stats",
-            "residue_stats",
-            "validation",
-        ]
-        for key in required_keys
-            @test haskey(data, key)
+        @test length(blocks) == 2
+        labels = ("SCIP only", "Parity/residue + SCIP")
+        metric_labels = ["Full wall time (s)", "Parity/residue presolve time (s)",
+            "SCIP presolve time (s)", "SCIP solving time (s)", "SCIP status"]
+        for (block, label, result) in zip(blocks, labels, results)
+            lines = split(block, '\n')
+            @test length(lines) == 6
+            @test lines[1] == label
+            @test [strip(first(split(line, ':'; limit = 2))) for line in lines[2:end]] == metric_labels
+            @test result.status == "SCIP_STATUS_OPTIMAL"
+            @test last(lines) == "  SCIP status: SCIP_STATUS_OPTIMAL"
+            check_lp_stats_timings(result)
         end
-
-        @test data["instance_name"] == "tiny"
-        @test data["metadata"]["legacy_lp_repaired"] == false
-        @test data["metadata"]["legacy_lp_repaired_constraints"] == 0
-        @test Set(keys(data["scip_original"])) == Set(keys(data["scip_presolved"]))
-        @test haskey(data["scip_original"], "termination_status")
-        @test haskey(data["scip_original"], "node_count")
-        @test haskey(data["scip_presolved"], "termination_status")
-        @test haskey(data["scip_presolved"], "node_count")
-
-        @test haskey(data["model_before"], "num_variables")
-        @test haskey(data["model_after"], "num_variables")
-        @test haskey(data["parity_stats"], "num_parity_constraints_generated")
-        @test haskey(data["residue_stats"], "num_constraints_processed")
-
-        @test data["validation"]["checked"] == true
-        @test data["validation"]["feasible"] == true
-        @test data["validation"]["constraint_violation_count"] == 0
+        @test results.original.qip_presolve_time_sec == 0.0
+        @test readdir(dir) == ["tiny.lp"]
+        @test read(lp_path, String) == LP_STATS_FEASIBLE
     end
 end
 
-@testset "presolve LP SCIP stats script repairs legacy ranged quadratic LP" begin
+@testset "LP SCIP comparison skips SCIP when QIPresolve proves infeasibility" begin
     mktempdir() do dir
-        lp_path = joinpath(dir, "legacy_ranged.lp")
-        output_path = joinpath(dir, "legacy_ranged_stats.json")
-
-        write(
-            lp_path,
-            """
-            Minimize
-             obj: x1 + x2
-            Subject To
-             c1: 0 <= [ 1 x1 ^ 2 + 2 x1 * x2 ] <= 1
-            Binary
-             x1
-             x2
-            End
-            """,
-        )
-
-        result_path = LPStatsScript.main([
-            lp_path,
-            "--output",
-            output_path,
-            "--silent",
-        ])
-
-        @test result_path == output_path
-        data = JSON.parsefile(output_path)
-        @test data["metadata"]["legacy_lp_repaired"] == true
-        @test data["metadata"]["legacy_lp_repaired_constraints"] == 1
-        @test data["metadata"]["legacy_lp_repair_error"] isa String
-        @test data["model_loaded"]["num_constraints"] == 2
+        lp_path = joinpath(dir, "infeasible.lp")
+        write(lp_path, replace(LP_STATS_FEASIBLE, "x1 + x2 <= 1" => "2 x1 + 2 x2 = 1"))
+        output = IOBuffer()
+        results = LPStatsScript.main([lp_path]; io = output)
+        @test results.original.status == "SCIP_STATUS_INFEASIBLE"
+        @test results.presolved.status == "INFEASIBLE (QIPresolve; SCIP skipped)"
+        @test results.presolved.scip_presolve_time_sec == 0.0
+        @test results.presolved.scip_solving_time_sec == 0.0
+        @test occursin("SCIP status: INFEASIBLE (QIPresolve; SCIP skipped)", String(take!(output)))
+        check_lp_stats_timings(results.original)
+        check_lp_stats_timings(results.presolved)
     end
 end
 
-@testset "random QIP LP generation writes reader-compatible LP" begin
+@testset "LP SCIP comparison solves models completely reduced by presolve" begin
     mktempdir() do dir
-        lp_path = joinpath(dir, "generated_random_qip.lp")
-        jump_model, _ = generate_random_qip_model(
-            4,
-            2;
-            p_con_eq = 0.0,
-            var_threshold_lb = -3,
-            var_threshold_ub = 3,
-            p_var_is_candidate = 1.0,
-            p_var_bilin = 0.5,
-            p_var_diag = 0.5,
-            p_var_lin = 0.0,
-            coeff_lb = -5,
-            coeff_ub = 5,
-            force_diag_even = false,
-            force_lin_even = false,
-            force_feasibility = true,
-            constraint_slack_range = [-1, 1],
-            seed = 17,
-        )
+        lp_path = joinpath(dir, "reduced.lp")
+        write(lp_path, replace(LP_STATS_FEASIBLE, "x1 + x2 <= 1" => "x1 + 2 x2 = 1"))
+        lp_model = LPStatsScript.read_lp(lp_path)
+        model = LPStatsScript.build_core_model(lp_model)
+        @test all(v -> v.lb == 0.0 && v.ub == 1.0, values(model.vars))
+        QIPresolve.presolve!(model)
+        @test isempty(model.vars)
+        @test isempty(model.cons)
+        @test !model.infeasible
 
-        save_moi(backend(jump_model), lp_path)
-        contents = read(lp_path, String)
+        results = LPStatsScript.main([lp_path]; io = IOBuffer())
+        @test results.original.status == results.presolved.status == "SCIP_STATUS_OPTIMAL"
+        check_lp_stats_timings(results.presolved)
+    end
+end
 
-        @test !occursin(r":\s*-?[\d.]+(?:[eE][+-]?\d+)?\s*<=\s*\[", contents)
+@testset "LP SCIP comparison supports quadratic constraints" begin
+    mktempdir() do dir
+        lp_path = joinpath(dir, "quadratic.lp")
+        write(lp_path, replace(LP_STATS_FEASIBLE, "x1 + x2 <= 1" => "[ 2 x1 * x2 ] <= 1"))
+        results = LPStatsScript.main([lp_path]; io = IOBuffer())
+        @test results.original.status == results.presolved.status == "SCIP_STATUS_OPTIMAL"
+        check_lp_stats_timings(results.presolved)
+    end
+end
 
-        load_info = LPStatsScript.load_lp_core_model(lp_path)
-        @test load_info.model isa PC.QPModel
-        @test load_info.legacy_lp_repaired == false
-        @test load_info.legacy_lp_repaired_constraints == 0
+@testset "SCIP time limit and timing counters" begin
+    optimizer = SCIP.Optimizer()
+    try
+        LPStatsScript.configure_scip!(optimizer)
+        @test MOI.get(optimizer, MOI.TimeLimitSec()) == 1800.0
+        @test MOI.get(optimizer, MOI.RawOptimizerAttribute("timing/clocktype")) == 2
+        @test MOI.get(optimizer, MOI.Silent())
+        @test MOI.get(optimizer, MOI.RawOptimizerAttribute("presolving/maxrounds")) == -1
+        x = MOI.add_variable(optimizer)
+        MOI.add_constraint(optimizer, x, MOI.ZeroOne())
+        @test LPStatsScript.scip_metrics(optimizer).scip_presolve_time_sec == 0.0
+
+        # Override the limit only in this test to exercise an immediate stop.
+        MOI.set(optimizer, MOI.TimeLimitSec(), 0.0)
+        MOI.optimize!(optimizer)
+        metrics = LPStatsScript.scip_metrics(optimizer)
+        @test metrics.status == "SCIP_STATUS_TIMELIMIT"
+        # SCIP may briefly enter presolving before checking even a zero limit.
+        @test isfinite(metrics.scip_presolve_time_sec) && metrics.scip_presolve_time_sec >= 0.0
+        @test isfinite(metrics.scip_solving_time_sec)
+        @test metrics.scip_solving_time_sec >= 0.0
+    finally
+        SCIP.free_scip(optimizer.inner)
+    end
+
+    optimizer = SCIP.Optimizer()
+    try
+        LPStatsScript.configure_scip!(optimizer)
+        x = MOI.add_variable(optimizer)
+        MOI.add_constraint(optimizer, x, MOI.ZeroOne())
+        MOI.optimize!(optimizer)
+        metrics = LPStatsScript.scip_metrics(optimizer)
+        @test metrics.status == "SCIP_STATUS_OPTIMAL"
+        @test metrics.scip_presolve_time_sec == SCIP.SCIPgetPresolvingTime(optimizer.inner)
+        @test metrics.scip_presolve_time_sec + metrics.scip_solving_time_sec ≈
+            SCIP.SCIPgetSolvingTime(optimizer.inner)
+    finally
+        SCIP.free_scip(optimizer.inner)
+    end
+end
+
+@testset "LP SCIP comparison CLI and unsupported inputs" begin
+    for flag in ("-h", "--help")
+        output = IOBuffer()
+        @test LPStatsScript.main([flag]; io = output) === nothing
+        @test occursin("Usage:", String(take!(output)))
+    end
+    for args in (String[], ["one.lp", "two.lp"], ["--silent"],
+            ["one.lp", "--output", "stats.json"], ["--help", "one.lp"])
+        @test_throws ErrorException LPStatsScript.main(args; io = IOBuffer())
+    end
+    mktempdir() do dir
+        @test_throws "LP file not found" LPStatsScript.main([joinpath(dir, "missing.lp")])
+        lp_path = joinpath(dir, "unsupported.lp")
+        write(lp_path, replace(LP_STATS_FEASIBLE, "Binary\n x1\n x2\n" => ""))
+        @test_throws "only integer and binary variables" LPStatsScript.main([lp_path])
+        write(lp_path, replace(LP_STATS_FEASIBLE, "obj: x1 + x2" => "obj: [ 2 x1 ^ 2 ] / 2"))
+        @test_throws "affine objectives only" LPStatsScript.main([lp_path])
     end
 end

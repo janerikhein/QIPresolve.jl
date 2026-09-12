@@ -25,6 +25,7 @@ using Test
     include("parity_stats_tests.jl")
     include("residue_stats_tests.jl")
     include("presolve_tests.jl")
+    include("presolve_main_benchmark_comparison_script_tests.jl")
     include("presolve_lp_stats_script_tests.jl")
     include("merge_graph_embedding_presolve_stats_script_tests.jl")
     include("aggregate_graph_embedding_presolve_stats_script_tests.jl")

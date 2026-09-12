@@ -28,6 +28,7 @@ const DEFAULT_SEED_BASE = 1
 const DEFAULT_SEED_STEP = 1
 const DEFAULT_OUTPUT_DIR = joinpath("results", "diophantine_presolve_experiment")
 const DEFAULT_PARITY_STRATEGY = QIP.PresolveConfig.DEFAULT_PRESOLVE_PARITY_STRATEGY
+const DEFAULT_FORCE_BILIN_EVEN = false
 const SUMMARY_FILENAME = "parity_presolve_summary.csv"
 const SUMMARY_HEADER = "type,m,avg_b_fix,avg_b_pat,avg_dom_red,avg_time"
 
@@ -46,6 +47,7 @@ const CLI_KEYS = Dict(
     "output-dir" => :output_dir,
     "output" => :output_dir,
     "parity-strategy" => :parity_strategy,
+    "force-bilin-even" => :force_bilin_even,
 )
 
 Base.@kwdef struct CliConfig
@@ -57,6 +59,7 @@ Base.@kwdef struct CliConfig
     seed_step::Int = DEFAULT_SEED_STEP
     output_dir::String = abspath(DEFAULT_OUTPUT_DIR)
     parity_strategy::Symbol = DEFAULT_PARITY_STRATEGY
+    force_bilin_even::Bool = DEFAULT_FORCE_BILIN_EVEN
 end
 
 function usage()
@@ -73,6 +76,7 @@ function usage()
       --seed-step n                Seed increment, default $DEFAULT_SEED_STEP
       --output-dir path            Output directory, default $DEFAULT_OUTPUT_DIR
       --parity-strategy name       full, mod2-basic, or mod4-basic, default $DEFAULT_PARITY_STRATEGY
+      --force-bilin-even bool      Double sampled bilinear coefficients, default $DEFAULT_FORCE_BILIN_EVEN
       -h, --help                   Show this help
     """
 end
@@ -81,6 +85,13 @@ function parse_int(value::AbstractString, name::AbstractString)::Int
     parsed = tryparse(Int, strip(value))
     parsed === nothing && error("Invalid $name: $value")
     return parsed
+end
+
+function parse_bool(value::AbstractString, name::AbstractString)::Bool
+    normalized = lowercase(strip(value))
+    normalized in ("true", "1", "yes") && return true
+    normalized in ("false", "0", "no") && return false
+    error("Invalid $name: $value. Expected true/false, 1/0, or yes/no.")
 end
 
 function parse_int_list(value::AbstractString, name::AbstractString)::Vector{Int}
@@ -173,6 +184,10 @@ function build_config(args::Vector{String})::Union{Nothing, CliConfig}
         parity_strategy = haskey(options, :parity_strategy) ?
             parse_parity_strategy(options[:parity_strategy]) :
             DEFAULT_PARITY_STRATEGY,
+        force_bilin_even = parse_bool(
+            get(options, :force_bilin_even, string(DEFAULT_FORCE_BILIN_EVEN)),
+            "force_bilin_even",
+        ),
     )
 
     config.nvars >= 1 || error("nvars must be >= 1")
@@ -205,7 +220,11 @@ function type_probabilities(type::AbstractString, p::Real)
     error("Invalid type: $type")
 end
 
-function generator_kwargs(type::AbstractString, p::Real)
+function generator_kwargs(
+        type::AbstractString,
+        p::Real;
+        force_bilin_even::Bool = DEFAULT_FORCE_BILIN_EVEN,
+    )
     probs = type_probabilities(type, p)
     return (
         p_con_eq = 1.0,
@@ -219,6 +238,7 @@ function generator_kwargs(type::AbstractString, p::Real)
         coeff_ub = 10,
         force_diag_even = false,
         force_lin_even = false,
+        force_bilin_even = force_bilin_even,
         force_feasibility = true,
         constraint_slack_range = [0],
     )
@@ -273,11 +293,13 @@ function build_random_diophantine_model(
         p::Real,
         generator_seed::Int,
         postprocess_rng::AbstractRNG,
+        ;
+        force_bilin_even::Bool = DEFAULT_FORCE_BILIN_EVEN,
     )
     jump_model, _ = generate_random_qip_model(
         nvars,
         ncons;
-        generator_kwargs(type, p)...,
+        generator_kwargs(type, p; force_bilin_even = force_bilin_even)...,
         seed = generator_seed,
     )
     model = QIP.build_model(QIP.from_moi(backend(jump_model)))
@@ -417,6 +439,7 @@ function run_instance(
         ncons::Int,
         seed::Int;
         parity_strategy::Symbol = DEFAULT_PARITY_STRATEGY,
+        force_bilin_even::Bool = DEFAULT_FORCE_BILIN_EVEN,
     )
     rng = MersenneTwister(seed)
     p = _sample_density(rng)
@@ -428,6 +451,7 @@ function run_instance(
         p,
         generator_seed,
         rng,
+        force_bilin_even = force_bilin_even,
     )
 
     original_log_domain_sum = log_domain_sum(model)
@@ -555,6 +579,7 @@ function run_experiment(config::CliConfig)
                     ncons,
                     seed;
                     parity_strategy = config.parity_strategy,
+                    force_bilin_even = config.force_bilin_even,
                 )
                 push!(instances, instance)
                 append_tuple_row!(density_path(config, type), instance.p, instance.dom_red)

@@ -12,9 +12,13 @@ mutable struct Constraint
     qe::QuadExpr
     lhs::Float64
     rhs::Float64
+    # Cumulative expression scaling since construction. Offsets do not affect
+    # interval widths; this factor lets experiments compare widths in the same
+    # units after GCD scaling and symmetrization.
+    _bound_scale::Float64
 
     function Constraint(id::Int, qe::QuadExpr, lhs::Float64, rhs::Float64)
-        con = new(id, qe, lhs, rhs)
+        con = new(id, qe, lhs, rhs, 1.0)
         normalize!(con)
         return con
     end

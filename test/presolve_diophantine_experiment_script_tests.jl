@@ -49,6 +49,27 @@ end
     @test DiophantineExperimentScript.parse_parity_strategy("mod4_basic") == :mod4_basic
     @test DiophantineExperimentScript.parse_parity_strategy("full") == :full
     @test_throws ErrorException DiophantineExperimentScript.parse_parity_strategy("basic")
+    for value in ("true", "1", "yes", "TRUE", "Yes")
+        @test DiophantineExperimentScript.parse_bool(value, "force_bilin_even")
+    end
+    for value in ("false", "0", "no", "FALSE", "No")
+        @test !DiophantineExperimentScript.parse_bool(value, "force_bilin_even")
+    end
+    @test_throws ErrorException DiophantineExperimentScript.parse_bool(
+        "maybe",
+        "force_bilin_even",
+    )
+
+    @test !DiophantineExperimentScript.build_config(String[]).force_bilin_even
+    @test DiophantineExperimentScript.build_config(
+        ["--force-bilin-even", "yes"],
+    ).force_bilin_even
+    @test DiophantineExperimentScript.build_config(
+        ["--force_bilin_even=1"],
+    ).force_bilin_even
+    @test_throws ErrorException DiophantineExperimentScript.build_config(
+        ["--force-bilin-even", "maybe"],
+    )
 
     p = 0.25
     @test DiophantineExperimentScript.type_probabilities("bilinear", p) ==
@@ -59,6 +80,12 @@ end
           (p_var_bilin = p, p_var_diag = p, p_var_lin = 0.0)
     @test DiophantineExperimentScript.type_probabilities("general", p) ==
           (p_var_bilin = p, p_var_diag = p, p_var_lin = p)
+    @test !DiophantineExperimentScript.generator_kwargs("pure", p).force_bilin_even
+    @test DiophantineExperimentScript.generator_kwargs(
+        "pure",
+        p;
+        force_bilin_even = true,
+    ).force_bilin_even
 end
 
 @testset "diophantine experiment generator respects class support" begin
@@ -85,6 +112,33 @@ end
         @test [Int(model.vars[var_id].ub) for var_id in 1:4] == upper_bounds
         @test all(con -> con.lhs == con.rhs, model.cons)
         @test all(con -> PC.eval_full(con.qe, x_star) == con.rhs, model.cons)
+    end
+end
+
+@testset "diophantine experiment can generate symmetric integer quadratic forms" begin
+    for (index, type) in enumerate(("pure", "general"))
+        model, _, x_star = DiophantineExperimentScript.build_random_diophantine_model(
+            type,
+            5,
+            2,
+            1.0,
+            3000 + index,
+            MersenneTwister(4000 + index);
+            force_bilin_even = true,
+        )
+
+        for con in model.cons
+            var_ids = sort!(collect(PC.vars(con.qe)))
+            bilinear_coeffs = [
+                PC.get_quad_coeff(con.qe, first_id, second_id)
+                for (var_index, first_id) in enumerate(var_ids)
+                for second_id in @view var_ids[(var_index + 1):end]
+            ]
+            @test length(bilinear_coeffs) == 10
+            @test all(coeff -> coeff != 0.0 && iseven(round(Int, coeff)), bilinear_coeffs)
+            @test PC.is_integer(con)
+            @test PC.eval_full(con.qe, x_star) == con.rhs
+        end
     end
 end
 
@@ -172,11 +226,13 @@ end
                     "--types", "bilinear,seperable",
                     "--seed-base", "41000",
                     "--parity-strategy", "mod2-basic",
+                    "--force-bilin-even", "true",
                 ])
             end
         end
 
         @test result.config.parity_strategy == :mod2_basic
+        @test result.config.force_bilin_even
         @test result.instance_count == 2
         @test length(result.rows) == 2
         @test result.summary_path == joinpath(dir, "parity_presolve_summary.csv")
