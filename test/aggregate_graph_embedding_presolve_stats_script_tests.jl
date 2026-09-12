@@ -13,7 +13,7 @@ const EXPECTED_AGGREGATE_HEADER = [
     "edge_density",
     "infeas_strategy",
     "infeas_base",
-    "box_scale",
+    "box_margin",
     "num_instances",
     "log_domain_sum_orig",
     "log_domain_sum_ps",
@@ -53,7 +53,7 @@ function aggregate_input_row(
         edge_density = 0.2,
         infeas_strategy = missing,
         infeas_base = missing,
-        box_scale = missing,
+        box_margin = missing,
         metric_offset::Float64 = 0.0,
         metric_overrides = Dict{String, Any}(),
         detected::Bool = false,
@@ -69,7 +69,7 @@ function aggregate_input_row(
         "edge_density" => edge_density,
         "infeas_strategy" => infeas_strategy,
         "infeas_base" => infeas_base,
-        "box_scale" => box_scale,
+        "box_margin" => box_margin,
         "infeasibility_detected" => detected,
         "infeasibility_source" => source,
     )
@@ -113,7 +113,7 @@ end
                     edge_density = missing,
                     infeas_strategy = "bounding_box",
                     infeas_base = "globally_rigid",
-                    box_scale = 0.756,
+                    box_margin = 1,
                     alpha = 0.126,
                     metric_offset = 10.126,
                 ),
@@ -158,7 +158,7 @@ end
         @test first_group.edge_density == 0.2
         @test ismissing(first_group.infeas_strategy)
         @test ismissing(first_group.infeas_base)
-        @test ismissing(first_group.box_scale)
+        @test ismissing(first_group.box_margin)
         @test first_group.num_instances == 4
         for (metric_index, column) in enumerate(AggregatePresolveStatsScript.AVERAGE_COLUMNS)
             column == "avg_relative_bound_tightening" && continue
@@ -187,7 +187,7 @@ end
         @test ismissing(second_group.edge_density)
         @test second_group.infeas_strategy == "bounding_box"
         @test second_group.infeas_base == "globally_rigid"
-        @test second_group.box_scale == 0.756
+        @test second_group.box_margin == 1
         @test second_group.num_instances == 1
         @test second_group.parity_presolve_time == 17.126
         @test second_group.avg_relative_bound_tightening_percent == 20.126

@@ -8,6 +8,7 @@ using Dates
 using JuMP: backend
 
 using QIPresolve.InstanceGeneration:
+    BoundingBoxCandidateRejected,
     generate_2_connected_instance,
     generate_globally_rigid_instance,
     generate_laman_instance,
@@ -15,6 +16,7 @@ using QIPresolve.InstanceGeneration:
 using QIPresolve.ModelIO: save_moi
 
 const DEFAULT_TARGET = joinpath("results", "graph_embedding_instances")
+const MAX_BOUNDING_BOX_CANDIDATE_TRIES = 10_000
 
 const CSV_COLUMNS = [
     "instance_name",
@@ -32,7 +34,7 @@ const CSV_COLUMNS = [
     "max_tries_H2",
     "infeas_strategy",
     "infeas_base",
-    "box_scale",
+    "box_margin",
 ]
 
 const CLI_KEYS = Dict(
@@ -57,7 +59,7 @@ const CLI_KEYS = Dict(
     "max-tries-h2" => :max_tries_H2,
     "infeas-strategy" => :infeas_strategy,
     "infeas-base" => :infeas_base,
-    "box-scale" => :box_scale,
+    "box-margin" => :box_margin,
     "contraction-vertices" => :contraction_vertices,
 )
 
@@ -82,7 +84,7 @@ Base.@kwdef struct GeneratorConfig
     max_tries_H2::Int = 300
     infeas_strategy::Symbol = :bounding_box
     infeas_base::Symbol = :globally_rigid
-    box_scale::Float64 = 0.75
+    box_margin::Int = 1
     contraction_vertices::Union{Nothing, NTuple{2, Int}} = nothing
     contraction_vertices_label::String = "auto"
 end
@@ -115,7 +117,7 @@ function usage()
     println("  --max-tries-H2 300")
     println("  --infeas-strategy bounding_box|vertex_contraction")
     println("  --infeas-base globally_rigid|laman|random_2_connected")
-    println("  --box-scale 0.75")
+    println("  --box-margin 1")
     return println("  --contraction-vertices auto|u,v")
 end
 
@@ -255,12 +257,14 @@ function build_config(args::Vector{String})::GeneratorConfig
         max_tries_H2 = parse_int(get(options, :max_tries_H2, "300"), "max_tries_H2"),
         infeas_strategy = normalize_infeas_strategy(get(options, :infeas_strategy, "bounding_box")),
         infeas_base = normalize_infeas_base(get(options, :infeas_base, "globally_rigid")),
-        box_scale = parse_float(get(options, :box_scale, "0.75"), "box_scale"),
+        box_margin = parse_int(get(options, :box_margin, "1"), "box_margin"),
         contraction_vertices = contraction_vertices,
         contraction_vertices_label = contraction_vertices_label,
     )
 
     config.count >= 1 || error("count must be >= 1")
+    config.seed_step >= 1 || error("seed-step must be >= 1")
+    config.box_margin >= 1 || error("box-margin must be >= 1")
     return config
 end
 
@@ -306,6 +310,52 @@ function next_instance_number(
     end
 
     return max_num + 1
+end
+
+function _same_bounding_box_family(row, config::GeneratorConfig)::Bool
+    row.type === missing && return false
+    row.n === missing && return false
+    row.R === missing && return false
+    row.num_anchors === missing && return false
+    row.alpha === missing && return false
+    row.infeas_strategy === missing && return false
+    row.infeas_base === missing && return false
+    row.box_margin === missing && return false
+    common_matches = string(row.type) == config.type_label &&
+        Int(row.n) == config.n &&
+        Int(row.R) == config.R &&
+        Int(row.num_anchors) == config.num_anchors &&
+        Float64(row.alpha) == config.alpha &&
+        string(row.infeas_strategy) == "bounding_box" &&
+        string(row.infeas_base) == string(config.infeas_base) &&
+        Int(row.box_margin) == config.box_margin
+    common_matches || return false
+
+    if config.infeas_base == :globally_rigid
+        return row.max_tries_H2 !== missing && Int(row.max_tries_H2) == config.max_tries_H2
+    elseif config.infeas_base == :laman
+        return row.pH2 !== missing && Float64(row.pH2) == config.pH2 &&
+            row.max_tries_H2 !== missing && Int(row.max_tries_H2) == config.max_tries_H2
+    else
+        return row.edge_density !== missing && Float64(row.edge_density) == config.edge_density &&
+            row.max_coord_tries !== missing && Int(row.max_coord_tries) == config.max_coord_tries
+    end
+end
+
+function previous_bounding_box_seed(config::GeneratorConfig)
+    (!isfile(config.csv_path) || filesize(config.csv_path) == 0) && return nothing
+
+    latest_seed = nothing
+    for row in CSV.File(config.csv_path)
+        instance_name = row.instance_name === missing ? "" : string(row.instance_name)
+        parse_instance_num(instance_name, config.instance_name_prefix, config.prefix) === nothing &&
+            continue
+        _same_bounding_box_family(row, config) || continue
+        row.seed === missing && error("Missing seed for existing bounding-box instance $instance_name")
+        seed = Int(row.seed)
+        latest_seed = latest_seed === nothing ? seed : max(latest_seed, seed)
+    end
+    return latest_seed
 end
 
 function base_kwargs(config::GeneratorConfig)
@@ -374,12 +424,30 @@ function generate_model(config::GeneratorConfig, seed::Int)
             seed = seed,
             num_anchors = config.num_anchors,
             alpha = config.alpha,
-            box_scale = config.box_scale,
+            box_margin = config.box_margin,
             contraction_vertices = config.contraction_vertices,
             base_kwargs(config)...,
         )
     end
     error("Unsupported type prefix: $(config.prefix)")
+end
+
+function generate_model_with_retry(config::GeneratorConfig, initial_seed::Int)
+    candidate_seed = initial_seed
+    for _ in 1:MAX_BOUNDING_BOX_CANDIDATE_TRIES
+        try
+            return generate_model(config, candidate_seed), candidate_seed
+        catch err
+            err isa BoundingBoxCandidateRejected || rethrow()
+            println("rejected bounding-box seed $candidate_seed: $(sprint(showerror, err))")
+            candidate_seed == typemax(Int) && error("cannot advance bounding-box candidate seed")
+            candidate_seed += 1
+        end
+    end
+    error(
+        "failed to find a valid bounding-box candidate after " *
+        "$MAX_BOUNDING_BOX_CANDIDATE_TRIES seeds starting at $initial_seed"
+    )
 end
 
 function blank_csv_row()
@@ -417,7 +485,8 @@ function set_type_specific_row_fields!(row::Dict{String, String}, config::Genera
     elseif config.prefix == "infeas"
         row["infeas_strategy"] = string(config.infeas_strategy)
         row["infeas_base"] = string(config.infeas_base)
-        row["box_scale"] = string(config.box_scale)
+        config.infeas_strategy == :bounding_box &&
+            (row["box_margin"] = string(config.box_margin))
         if config.infeas_base == :globally_rigid
             row["max_tries_H2"] = string(config.max_tries_H2)
         elseif config.infeas_base == :laman
@@ -454,15 +523,24 @@ function run(config::GeneratorConfig)
     ensure_csv_header!(config.csv_path)
 
     start_num = next_instance_number(config.csv_path, config.prefix, config.instance_name_prefix)
+    is_bounding_box = config.prefix == "infeas" && config.infeas_strategy == :bounding_box
+    previous_seed = is_bounding_box ? previous_bounding_box_seed(config) : nothing
+    next_bounding_box_seed = previous_seed === nothing ? nothing : previous_seed + config.seed_step
     for offset in 0:(config.count - 1)
         num = start_num + offset
-        seed = config.seed_base + (num - 1) * config.seed_step
+        scheduled_seed = config.seed_base + (num - 1) * config.seed_step
+        initial_seed = next_bounding_box_seed === nothing ?
+            scheduled_seed : max(scheduled_seed, next_bounding_box_seed)
         instance_name = "$(config.instance_name_prefix)$(config.prefix)_$num"
         file_name = "$instance_name.lp"
         file_path = joinpath(config.target, file_name)
         isfile(file_path) && error("Refusing to overwrite existing instance file: $file_path")
 
-        model, _, _ = generate_model(config, seed)
+        generated, seed = is_bounding_box ?
+            generate_model_with_retry(config, initial_seed) :
+            (generate_model(config, scheduled_seed), scheduled_seed)
+        model, _, _ = generated
+        is_bounding_box && (next_bounding_box_seed = seed + config.seed_step)
         save_moi(backend(model), file_path)
         append_csv_row!(
             config.csv_path,

@@ -8,6 +8,41 @@ const PresolveQuadTerm = Tuple{Float64, PC.VarId, PC.VarId}
 const PresolveLinTerm = Tuple{Float64, PC.VarId}
 const PRESOLVE_NEXT_CON_ID = Ref(0)
 
+@testset "presolve reduction switches" begin
+    function switch_model()
+        return PC.QPModel(Dict(1 => PC.IntVar(0.0, 1.0), 2 => PC.IntVar(0.0, 1.0)),
+            [PC.Constraint(1, PC.QuadExpr(PresolveQuadTerm[], [(1.0, 1), (2.0, 2)]), 1.0, 1.0)],
+            PC.QuadExpr(PresolveQuadTerm[], PresolveLinTerm[]), :min)
+    end
+    for parity in (false, true), residue in (false, true)
+        result = QIPresolve.presolve!(switch_model(); enable_parity = parity,
+            enable_residue = residue, collect_stats = true)
+        @test !result.model.infeasible
+        @test length(result.model.vars) == (parity ? 0 : 2)
+        if parity
+            @test QIPresolve.postsolve(result.postsolver, Dict{Int,Float64}()) == Dict(1 => 1.0, 2 => 0.0)
+        else
+            @test all(getfield(result.parity_stats, f) == getfield(PC.ParityStats(), f)
+                for f in fieldnames(PC.ParityStats))
+        end
+        if !residue
+            @test all(getfield(result.residue_stats, f) == getfield(PC.ResidueStats(), f)
+                for f in fieldnames(PC.ResidueStats))
+        end
+    end
+    @test !QIPresolve.presolve!(switch_model(); enable_parity = false, enable_residue = false,
+        parity_strategy = :invalid, residue_strategy = :invalid).model.infeasible
+    default = QIPresolve.presolve!(switch_model())
+    explicit = QIPresolve.presolve!(switch_model(); enable_parity = true, enable_residue = true)
+    @test PC._model_state_signature(default.model) == PC._model_state_signature(explicit.model)
+
+    # A violated constant row must not disappear and be called feasible.
+    constant_model = PC.QPModel(Dict(1 => PC.IntVar(0.0, 0.0)),
+        [PC.Constraint(1, PC.QuadExpr(PresolveQuadTerm[], [(1.0, 1)]), 1.0, 1.0)],
+        PC.QuadExpr(PresolveQuadTerm[], PresolveLinTerm[]), :min)
+    @test QIPresolve.presolve!(constant_model; enable_parity = false, enable_residue = false).model.infeasible
+end
+
 presolve_next_con_id() = (PRESOLVE_NEXT_CON_ID[] += 1)
 presolve_empty_objective() = PC.QuadExpr(PresolveQuadTerm[], PresolveLinTerm[])
 
@@ -15,6 +50,7 @@ presolve_empty_objective() = PC.QuadExpr(PresolveQuadTerm[], PresolveLinTerm[])
     @test QIPresolve.PresolveConfig.DEFAULT_PRESOLVE_RESIDUE_STRATEGY == :divisor_free
     @test QIPresolve.PresolveConfig.DEFAULT_PRESOLVE_RESIDUE_THRESHOLD == 64
     @test QIPresolve.PresolveConfig.DEFAULT_PRESOLVE_TREEWIDTH_THRESHOLD == 2
+    @test QIPresolve.PresolveConfig.DEFAULT_PRESOLVE_PARITY_STRATEGY == :full
 end
 
 @testset "presolve symmetrization doubles canonical constraint coefficients" begin
@@ -111,6 +147,51 @@ end
     @test isempty(model.vars)
     @test QIPresolve.postsolve(result.postsolver, Dict{PC.VarId, Float64}()) ==
         Dict{PC.VarId, Float64}(1 => 1.0)
+end
+
+@testset "presolve! passes parity strategy option" begin
+    function conjunction_true_model()
+        vars = Dict{PC.VarId, PC.IntVar}(
+            1 => PC.IntVar(0.0, 1.0),
+            2 => PC.IntVar(0.0, 1.0),
+        )
+        con = PC.Constraint(
+            presolve_next_con_id(),
+            PC.QuadExpr(PresolveQuadTerm[(2.0, 1, 2)], PresolveLinTerm[]),
+            2.0,
+            2.0,
+        )
+        return PC.QPModel(vars, [con], presolve_empty_objective(), :min)
+    end
+
+    mod2_model = conjunction_true_model()
+    mod2_result = QIPresolve.presolve!(
+        mod2_model;
+        parity_strategy = :mod2_basic,
+        residue_strategy = :powers_of_two,
+        residue_threshold = 0,
+    )
+
+    @test mod2_result.model === mod2_model
+    @test !mod2_model.infeasible
+    @test length(mod2_model.vars) == 2
+
+    full_model = conjunction_true_model()
+    full_result = QIPresolve.presolve!(
+        full_model;
+        parity_strategy = :full,
+        residue_strategy = :powers_of_two,
+        residue_threshold = 0,
+    )
+
+    @test full_result.model === full_model
+    @test !full_model.infeasible
+    @test isempty(full_model.vars)
+
+    @test_throws ArgumentError QIPresolve.presolve!(
+        conjunction_true_model();
+        parity_strategy = :invalid,
+    )
 end
 
 @testset "presolve! runs the first residue pass without parity changes" begin

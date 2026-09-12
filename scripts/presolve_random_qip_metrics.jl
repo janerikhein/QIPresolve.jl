@@ -15,7 +15,7 @@ const DEFAULT_N_CONSTRAINTS = 200
 const DEFAULT_SEED = 42
 
 const RANDOM_QIP_KWARGS = (
-    p_con_eq = 0.0,
+    p_con_eq = 1.0,
     var_threshold_lb = -10,
     var_threshold_ub = 10,
     p_var_is_candidate = 0.02,

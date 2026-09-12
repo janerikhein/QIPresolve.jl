@@ -517,7 +517,12 @@ function propagate!(
     model::ParityModel,
     manager::PropagationManager,
     stats_accumulator::Union{Nothing, _ParityStatsAccumulator} = nothing,
+    ;
+    parity_strategy = DEFAULT_PRESOLVE_PARITY_STRATEGY,
 )
+    parity_strategy = _normalize_parity_strategy(parity_strategy)
+    use_full_propagation = _parity_uses_full_propagation(parity_strategy)
+
     while _has_constraints_requiring_propagation(model) && !model.infeasible
         empty!(manager.seen_fixings)
         empty!(manager.seen_substitutions)
@@ -531,23 +536,48 @@ function propagate!(
             end
 
             if con.meta.is_pure_xor || (con.meta.nnz_par == 0 && con.meta.nnz_conj == 1)
-                register_implications!(manager, con, model.pos_to_var_id, stats_accumulator)
+                register_implications!(
+                    manager,
+                    con,
+                    model.pos_to_var_id,
+                    stats_accumulator;
+                    parity_strategy = parity_strategy,
+                )
                 i += 1
                 continue
             end
 
-            tripartite_action = _tripartite_action(con)
-            if tripartite_action isa _TripartiteImplicationAction
-                _add_tripartite_implications!(manager, model.pos_to_var_id, tripartite_action, stats_accumulator)
-                con.meta.requires_prop = false
-                i += 1
-                continue
-            elseif tripartite_action isa _TripartiteRewriteAction
-                _insert_tripartite_rewrite!(model, manager, i, tripartite_action, stats_accumulator)
-                continue
+            if use_full_propagation
+                tripartite_action = _tripartite_action(con)
+                if tripartite_action isa _TripartiteImplicationAction
+                    _add_tripartite_implications!(
+                        manager,
+                        model.pos_to_var_id,
+                        tripartite_action,
+                        stats_accumulator,
+                    )
+                    con.meta.requires_prop = false
+                    i += 1
+                    continue
+                elseif tripartite_action isa _TripartiteRewriteAction
+                    _insert_tripartite_rewrite!(
+                        model,
+                        manager,
+                        i,
+                        tripartite_action,
+                        stats_accumulator,
+                    )
+                    continue
+                end
             end
 
-            register_implications!(manager, con, model.pos_to_var_id, stats_accumulator)
+            register_implications!(
+                manager,
+                con,
+                model.pos_to_var_id,
+                stats_accumulator;
+                parity_strategy = parity_strategy,
+            )
             i += 1
         end
 

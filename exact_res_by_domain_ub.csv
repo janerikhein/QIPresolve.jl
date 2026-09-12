@@ -1,0 +1,2 @@
+domain_ub,constraints,opt_avg_red,opt_std_red,tw_1,tw_2,tw_3,tw_ge4,avg_wall_time_sec_per_constraint
+3,1000,0.16174896843782294,0.23476171028322274,10.0,36.4,33.4,20.2,2.0430564880371092e-5

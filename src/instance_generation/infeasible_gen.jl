@@ -3,13 +3,52 @@ using JuMP
 using Random
 
 
-function validate_box_scale(box_scale::Real)::Float64
-    scale_float = Float64(box_scale)
-    isfinite(scale_float) || throw(ArgumentError("box_scale must be finite, got $box_scale"))
-    0.0 <= scale_float <= 1.0 || throw(ArgumentError(
-        "box_scale must satisfy 0.0 <= box_scale <= 1.0, got $box_scale"
+const BoundingBoxConflict = NamedTuple{
+    (:variable, :original_lower, :original_upper, :proposed_lower, :proposed_upper),
+    Tuple{String, Float64, Float64, Float64, Float64},
+}
+
+
+"""
+Raised when a proposed bounding-box restriction has an empty intersection with
+one or more existing variable domains.
+"""
+struct BoundingBoxCandidateRejected <: Exception
+    conflicts::Vector{BoundingBoxConflict}
+end
+
+
+function Base.showerror(io::IO, error::BoundingBoxCandidateRejected)
+    print(io, "bounding-box candidate creates empty variable domains: ")
+    for (index, conflict) in enumerate(error.conflicts)
+        index > 1 && print(io, "; ")
+        print(
+            io,
+            conflict.variable,
+            " original=[",
+            conflict.original_lower,
+            ", ",
+            conflict.original_upper,
+            "] proposed=[",
+            conflict.proposed_lower,
+            ", ",
+            conflict.proposed_upper,
+            "]",
+        )
+    end
+    return nothing
+end
+
+
+function validate_box_margin(box_margin::Integer)::Int
+    box_margin isa Bool && throw(ArgumentError(
+        "box_margin must be a positive integer, got $box_margin"
     ))
-    return scale_float
+    margin_int = Int(box_margin)
+    margin_int >= 1 || throw(ArgumentError(
+        "box_margin must be a positive integer, got $box_margin"
+    ))
+    return margin_int
 end
 
 
@@ -75,42 +114,73 @@ function _model_frame_coords(
 end
 
 
-function _scaled_bounding_box(
-        coords::AbstractVector{IPoint}, center::Int, box_scale::Float64
+function _tightened_bounding_box(
+        coords::AbstractVector{IPoint}, box_margin::Int
     )::NTuple{4, Int}
-    center_point = coords[center]
     x_min = minimum(point.x for point in coords)
     x_max = maximum(point.x for point in coords)
     y_min = minimum(point.y for point in coords)
     y_max = maximum(point.y for point in coords)
 
-    x_lower = ceil(Int, center_point.x + box_scale * (x_min - center_point.x))
-    x_upper = floor(Int, center_point.x + box_scale * (x_max - center_point.x))
-    y_lower = ceil(Int, center_point.y + box_scale * (y_min - center_point.y))
-    y_upper = floor(Int, center_point.y + box_scale * (y_max - center_point.y))
+    x_lower = x_min + box_margin
+    x_upper = x_max - box_margin
+    y_lower = y_min + box_margin
+    y_upper = y_max - box_margin
     return x_lower, x_upper, y_lower, y_upper
 end
 
 
-function _restrict_variable_bounds!(var, lower::Int, upper::Int)
-    set_lower_bound(var, max(lower_bound(var), lower))
-    set_upper_bound(var, min(upper_bound(var), upper))
-    return nothing
+function _proposed_variable_bounds(var, lower::Int, upper::Int)
+    original_lower = lower_bound(var)
+    original_upper = upper_bound(var)
+    return (
+        original_lower = original_lower,
+        original_upper = original_upper,
+        proposed_lower = max(original_lower, lower),
+        proposed_upper = min(original_upper, upper),
+    )
 end
 
 
 function _apply_bounding_box_restriction!(
-        x, y, emb_graph::EmbeddedGraph, anchors::AbstractVector{Int}, box_scale::Float64
+        x, y, emb_graph::EmbeddedGraph, anchors::AbstractVector{Int}, box_margin::Int
     )
     center = _graph_center_vertex(emb_graph)
     model_coords = _model_frame_coords(emb_graph, center, anchors)
-    x_lower, x_upper, y_lower, y_upper = _scaled_bounding_box(model_coords, center, box_scale)
+    x_lower, x_upper, y_lower, y_upper = _tightened_bounding_box(
+        model_coords, box_margin
+    )
 
+    proposed_bounds = Tuple{VariableRef, Float64, Float64}[]
+    conflicts = BoundingBoxConflict[]
     for vertex in 1:nv(emb_graph.graph)
-        _restrict_variable_bounds!(x[vertex], x_lower, x_upper)
-        _restrict_variable_bounds!(y[vertex], y_lower, y_upper)
+        for (var, lower, upper) in (
+                (x[vertex], x_lower, x_upper),
+                (y[vertex], y_lower, y_upper),
+            )
+            proposed = _proposed_variable_bounds(var, lower, upper)
+            push!(proposed_bounds, (
+                var,
+                proposed.proposed_lower,
+                proposed.proposed_upper,
+            ))
+            if proposed.proposed_lower > proposed.proposed_upper
+                push!(conflicts, (
+                    variable = name(var),
+                    original_lower = proposed.original_lower,
+                    original_upper = proposed.original_upper,
+                    proposed_lower = proposed.proposed_lower,
+                    proposed_upper = proposed.proposed_upper,
+                ))
+            end
+        end
     end
 
+    isempty(conflicts) || throw(BoundingBoxCandidateRejected(conflicts))
+    for (var, lower, upper) in proposed_bounds
+        set_lower_bound(var, lower)
+        set_upper_bound(var, upper)
+    end
     return nothing
 end
 
@@ -206,10 +276,15 @@ end
 """
     generate_likely_infeasible_embedding_instance(n; strategy=:bounding_box,
         base=:globally_rigid, seed=0, num_anchors=0, alpha=0.0,
-        box_scale=0.75, contraction_vertices=nothing, kwargs...)
+        box_margin=1, contraction_vertices=nothing, kwargs...)
 
 Generate a graph embedding model from a feasible sampled embedding and apply a
 structural modification intended to make the model likely infeasible.
+
+The bounding-box strategy moves every face of the tight sampled-coordinate box
+inward by `box_margin` and intersects that box with the existing variable
+domains. It throws [`BoundingBoxCandidateRejected`](@ref) rather than creating
+an invalid variable interval when an intersection is empty.
 
 Supported `strategy` values are `:bounding_box` and `:vertex_contraction`
 (`:contraction` is accepted as an alias). Supported `base` values are
@@ -220,13 +295,13 @@ base graph sampler.
 function generate_likely_infeasible_embedding_instance(
         n::Int; strategy::Symbol = :bounding_box, base::Symbol = :globally_rigid,
         seed::Int = 0, num_anchors::Int = 0, alpha::Real = 0.0,
-        box_scale::Real = 0.75, contraction_vertices = nothing, kwargs...
+        box_margin::Integer = 1, contraction_vertices = nothing, kwargs...
     )
     normalized_strategy = validate_infeasible_strategy(strategy)
     validate_infeasible_base(base)
     validate_num_anchors(num_anchors, n)
     alpha_float = validate_inexact_alpha(alpha)
-    scale_float = validate_box_scale(box_scale)
+    margin_int = validate_box_margin(box_margin)
 
     rng = rng_from_seed(seed)
     emb_graph = _sample_infeasible_base(rng, n, base; kwargs...)
@@ -234,7 +309,7 @@ function generate_likely_infeasible_embedding_instance(
     model, x, y = build_embedding_model(emb_graph, anchors; alpha = alpha_float)
 
     if normalized_strategy == :bounding_box
-        _apply_bounding_box_restriction!(x, y, emb_graph, anchors, scale_float)
+        _apply_bounding_box_restriction!(x, y, emb_graph, anchors, margin_int)
     else
         pair = _resolve_contraction_vertices(rng, emb_graph, contraction_vertices)
         _apply_vertex_contraction!(model, x, y, pair)

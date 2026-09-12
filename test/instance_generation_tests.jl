@@ -139,21 +139,20 @@ function affine_equalities_signature(model)
     return sort(rows; by = repr)
 end
 
-function expected_bounding_box_bounds(embedded, anchors, base_bounds, box_scale)
+function expected_bounding_box_bounds(embedded, anchors, base_bounds, box_margin)
     center = IG.graph_center(IG.pw_shortest_paths(embedded.graph))
     center_point = embedded.coords[center]
     coords = isempty(anchors) ?
         [IG.IPoint(point.x - center_point.x, point.y - center_point.y) for point in embedded.coords] :
         embedded.coords
-    box_center = coords[center]
     x_min = minimum(point.x for point in coords)
     x_max = maximum(point.x for point in coords)
     y_min = minimum(point.y for point in coords)
     y_max = maximum(point.y for point in coords)
-    x_lower = ceil(Int, box_center.x + box_scale * (x_min - box_center.x))
-    x_upper = floor(Int, box_center.x + box_scale * (x_max - box_center.x))
-    y_lower = ceil(Int, box_center.y + box_scale * (y_min - box_center.y))
-    y_upper = floor(Int, box_center.y + box_scale * (y_max - box_center.y))
+    x_lower = x_min + box_margin
+    x_upper = x_max - box_margin
+    y_lower = y_min + box_margin
+    y_upper = y_max - box_margin
 
     return [
         (
@@ -173,6 +172,7 @@ end
     @test :generate_laman_instance in exported_names
     @test :generate_globally_rigid_instance in exported_names
     @test :generate_likely_infeasible_embedding_instance in exported_names
+    @test :BoundingBoxCandidateRejected in exported_names
 
     for helper in (
             :random_2_connected_graph,
@@ -432,13 +432,13 @@ end
         6; base = :unknown, R = 8
     )
     @test_throws ArgumentError generate_likely_infeasible_embedding_instance(
-        6; box_scale = -0.1, R = 8
+        6; box_margin = 0, R = 8
     )
     @test_throws ArgumentError generate_likely_infeasible_embedding_instance(
-        6; box_scale = 1.1, R = 8
+        6; box_margin = -1, R = 8
     )
     @test_throws ArgumentError generate_likely_infeasible_embedding_instance(
-        6; box_scale = Inf, R = 8
+        6; box_margin = true, R = 8
     )
     @test_throws ArgumentError generate_likely_infeasible_embedding_instance(
         6; strategy = :vertex_contraction, contraction_vertices = (1, 1), R = 8
@@ -461,15 +461,15 @@ end
     n = 6
     R = 8
     seed = 19
-    box_scale = 0.5
+    box_margin = 1
     rng = IG.rng_from_seed(seed)
     graph, coords = IG._random_globally_rigid_graph(rng, n; R = R)
     embedded = IG.to_embedded(graph, coords)
     _, base_x, base_y = IG.build_embedding_model(embedded)
-    expected_bounds = expected_bounding_box_bounds(embedded, Int[], model_bounds(base_x, base_y), box_scale)
+    expected_bounds = expected_bounding_box_bounds(embedded, Int[], model_bounds(base_x, base_y), box_margin)
 
     bounded_model, bounded_x, bounded_y = generate_likely_infeasible_embedding_instance(
-        n; R = R, seed = seed, box_scale = box_scale
+        n; R = R, seed = seed, box_margin = box_margin
     )
     @test model_bounds(bounded_x, bounded_y) == expected_bounds
     @test JuMP.num_constraints(bounded_model, JuMP.QuadExpr, MOI.EqualTo{Float64}) == ne(graph)
@@ -483,13 +483,46 @@ end
     )
 
     bounded_model_1, bounded_x_1, bounded_y_1 = generate_likely_infeasible_embedding_instance(
-        n; R = R, seed = 37, box_scale = 0.6
+        n; R = R, seed = 37, box_margin = 1
     )
     bounded_model_2, bounded_x_2, bounded_y_2 = generate_likely_infeasible_embedding_instance(
-        n; R = R, seed = 37, box_scale = 0.6
+        n; R = R, seed = 37, box_margin = 1
     )
     @test model_bounds(bounded_x_1, bounded_y_1) == model_bounds(bounded_x_2, bounded_y_2)
     @test affine_equalities_signature(bounded_model_1) == affine_equalities_signature(bounded_model_2)
+
+    rejected_error = try
+        generate_likely_infeasible_embedding_instance(
+            26; R = 100, seed = 40_000, num_anchors = 3, box_margin = 1
+        )
+        nothing
+    catch err
+        err
+    end
+    @test rejected_error isa IG.BoundingBoxCandidateRejected
+    @test any(conflict -> conflict.variable == "x[20]", rejected_error.conflicts)
+
+    rejected_rng = IG.rng_from_seed(40_000)
+    rejected_graph, rejected_coords = IG._random_globally_rigid_graph(
+        rejected_rng, 26; R = 100
+    )
+    rejected_embedded = IG.to_embedded(rejected_graph, rejected_coords)
+    rejected_anchors = IG.select_anchor_vertices(rejected_rng, 26, 3)
+    _, rejected_x, rejected_y = IG.build_embedding_model(rejected_embedded, rejected_anchors)
+    bounds_before_rejection = model_bounds(rejected_x, rejected_y)
+    @test_throws IG.BoundingBoxCandidateRejected IG._apply_bounding_box_restriction!(
+        rejected_x, rejected_y, rejected_embedded, rejected_anchors, 1
+    )
+    @test model_bounds(rejected_x, rejected_y) == bounds_before_rejection
+
+    _, regression_x, regression_y = generate_likely_infeasible_embedding_instance(
+        26; R = 100, seed = 40_006, num_anchors = 3, box_margin = 1
+    )
+    @test model_bounds(regression_x, regression_y)[22] == (14.0, 14.0, -91.0, -91.0)
+    @test all(
+        lower_x <= upper_x && lower_y <= upper_y
+        for (lower_x, upper_x, lower_y, upper_y) in model_bounds(regression_x, regression_y)
+    )
 
     alias_model, alias_x, alias_y = generate_likely_infeasible_embedding_instance(
         n; base = :two_connected, R = R, edge_density = 0.4, seed = 11
@@ -743,5 +776,64 @@ end
 
     for (_, coeff) in nonzero_lin_terms(qp_model.obj_expr)
         @test is_even_coeff(coeff)
+    end
+end
+
+@testset "generate_random_qip_model doubles forced-even bilinear coefficients" begin
+    kwargs = random_qip_kwargs(
+        p_con_eq = 0.5,
+        p_var_is_candidate = 1.0,
+        p_var_bilin = 1.0,
+        p_var_diag = 1.0,
+        p_var_lin = 1.0,
+        coeff_lb = 1,
+        coeff_ub = 1,
+        force_feasibility = true,
+        constraint_slack_range = -2:2,
+        seed = 93,
+    )
+
+    default_model, default_x_star = generate_random_qip_model(4, 3; kwargs...)
+    forced_model, forced_x_star = generate_random_qip_model(
+        4,
+        3;
+        kwargs...,
+        force_bilin_even = true,
+    )
+    default_qp = random_qip_to_core(default_model)
+    forced_qp = random_qip_to_core(forced_model)
+
+    @test default_x_star == forced_x_star
+    @test sort!([(var_id, var.lb, var.ub) for (var_id, var) in default_qp.vars]) ==
+          sort!([(var_id, var.lb, var.ub) for (var_id, var) in forced_qp.vars])
+    @test expr_signature(default_qp.obj_expr) == expr_signature(forced_qp.obj_expr)
+
+    for (default_con, forced_con) in zip(default_qp.cons, forced_qp.cons)
+        default_quad = Dict(
+            (var_id_1, var_id_2) => coeff
+            for (var_id_1, var_id_2, coeff) in nonzero_quad_terms(default_con.qe)
+        )
+        forced_quad = Dict(
+            (var_id_1, var_id_2) => coeff
+            for (var_id_1, var_id_2, coeff) in nonzero_quad_terms(forced_con.qe)
+        )
+
+        @test keys(default_quad) == keys(forced_quad)
+        @test nonzero_lin_terms(default_con.qe) == nonzero_lin_terms(forced_con.qe)
+        for ((var_id_1, var_id_2), default_coeff) in default_quad
+            forced_coeff = forced_quad[(var_id_1, var_id_2)]
+            if var_id_1 == var_id_2
+                @test forced_coeff == default_coeff
+            else
+                @test forced_coeff == 2.0 * default_coeff
+                @test is_even_coeff(forced_coeff)
+            end
+        end
+
+        default_value = PC.eval_full(default_con.qe, default_x_star)
+        forced_value = PC.eval_full(forced_con.qe, forced_x_star)
+        @test (default_con.lhs - default_value, default_con.rhs - default_value) ==
+              (forced_con.lhs - forced_value, forced_con.rhs - forced_value)
+        @test forced_con.lhs <= forced_value <= forced_con.rhs
     end
 end

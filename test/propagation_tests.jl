@@ -445,6 +445,8 @@ end
             false,
         ),
         pos_to_var,
+        ;
+        parity_strategy = :mod2_basic,
     )
 
     PC.fix_var!(reverse_manager, 11, false)
@@ -505,6 +507,26 @@ end
     @test PC.fixed_value(manager, 11) == true
     @test PC.fixed_value(manager, 12) == false
     @test (11, true) in Set(drain_fixings!(manager))
+end
+
+@testset "register_implications! skips triangle implications in basic strategies" begin
+    pos_to_var = [1, 2, 3]
+    con = PC.XorConstraint(
+        falses(3),
+        propagation_edge_matrix(3, [(1, 2), (2, 3), (1, 3)]),
+        true,
+    )
+    manager = PC.PropagationManager(pos_to_var)
+
+    PC.register_implications!(manager, con, pos_to_var; parity_strategy = :mod4_basic)
+
+    PC.fix_var!(manager, 1, false)
+    @test PC.pop_fixing!(manager) == (1, false)
+    @test PC.update!(manager) === manager
+    @test PC.fixed_value(manager, 2) === nothing
+    @test PC.fixed_value(manager, 3) === nothing
+    @test isempty(drain_fixings!(manager))
+    @test !con.meta.requires_prop
 end
 
 @testset "register_implications! adds triangle implications for rhs=true" begin

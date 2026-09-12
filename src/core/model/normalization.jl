@@ -85,6 +85,7 @@ function symmetrize!(con::Constraint)
     con.qe.constant *= 2
     con.lhs *= 2
     con.rhs *= 2
+    con._bound_scale *= 2
     _refresh_is_integer!(con.qe)
     return con
 end
@@ -131,6 +132,7 @@ function scale_gcd!(con::Constraint)
     g <= 1 && return false
 
     scale = Float64(g)
+    con._bound_scale /= scale
 
     for vid in var_ids
         lin_coeff = get_lin_coeff(con.qe, vid)
@@ -245,6 +247,10 @@ function _fix_vars_and_singletons!(model::QPModel, postsolver::Union{Nothing, Pa
         normalize!(con)
 
         if is_empty(con.qe)
+            if !(con.lhs <= 0.0 <= con.rhs)
+                model.infeasible = true
+                return true
+            end
             deleteat!(model.cons, i)
             changed = true
             continue
@@ -368,6 +374,7 @@ function _scale_constraint_by_two!(con::Constraint)
     con.qe.constant *= 2.0
     con.lhs *= 2.0
     con.rhs *= 2.0
+    con._bound_scale *= 2.0
     return normalize!(con)
 end
 
@@ -406,12 +413,12 @@ function _constraint_coefficient_key(con::Constraint)
         end
     end
 
-    return (lin_terms = Tuple(lin_terms), quad_terms = Tuple(quad_terms))
+    return (lin_terms = lin_terms, quad_terms = quad_terms)
 end
 
 function _negated_constraint_key(key)
-    lin_terms = Tuple((var_id, -coeff) for (var_id, coeff) in key.lin_terms)
-    quad_terms = Tuple((var_i, var_j, -coeff) for (var_i, var_j, coeff) in key.quad_terms)
+    lin_terms = [(var_id, -coeff) for (var_id, coeff) in key.lin_terms]
+    quad_terms = [(var_i, var_j, -coeff) for (var_i, var_j, coeff) in key.quad_terms]
     return (lin_terms = lin_terms, quad_terms = quad_terms)
 end
 

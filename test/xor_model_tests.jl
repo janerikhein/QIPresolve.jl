@@ -1,5 +1,5 @@
 using Test
-using Graphs: has_edge
+using Graphs: has_edge, ne
 import QIPresolve.PresolvingCore as PC
 
 function parity_identity_maps(n::Int)
@@ -314,6 +314,24 @@ end
     @test model.cons[2].par == BitVector([0, 1, 1, 1])
     @test !model.cons[2].rhs
     @test all(!con.meta.requires_prop for con in model.cons)
+
+    basic_tripartite = PC.XorConstraint(
+        BitVector([1, 0, 0, 0]),
+        parity_symmetric_bitmatrix(4, [(1, 2), (1, 3), (1, 4), (2, 3), (2, 4)]),
+        true,
+    )
+    basic_model = PC.ParityModel(var_to_pos, pos_to_var, [basic_tripartite])
+    basic_manager = PC.PropagationManager(basic_model.pos_to_var_id)
+
+    PC.propagate!(basic_model, basic_manager; parity_strategy = :mod4_basic)
+
+    @test length(basic_model.cons) == 1
+    @test basic_model.pivots == PC.PivotSlot[nothing]
+    @test basic_model.cons[1].par == basic_tripartite.par
+    @test basic_model.cons[1].conj == basic_tripartite.conj
+    @test basic_model.cons[1].rhs == basic_tripartite.rhs
+    @test !basic_model.cons[1].meta.requires_prop
+    @test ne(basic_manager.graph) == 0
 end
 
 @testset "propagate! adds implication-only tripartite matches without removing the row" begin

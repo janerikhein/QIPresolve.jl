@@ -1025,7 +1025,12 @@ function register_implications!(
     con::XorConstraint,
     idx_to_vid,
     stats_accumulator::Union{Nothing, _ParityStatsAccumulator} = nothing,
+    ;
+    parity_strategy = DEFAULT_PRESOLVE_PARITY_STRATEGY,
 )
+    parity_strategy = _normalize_parity_strategy(parity_strategy)
+    use_full_propagation = _parity_uses_full_propagation(parity_strategy)
+
     con.meta.requires_prop || return nothing
     con.meta.requires_update && update!(con)
 
@@ -1128,7 +1133,7 @@ function register_implications!(
         end
 
         # Case 2.3: triangle-shaped conjunction terms
-        if con.meta.nnz_conj == 3
+        if use_full_propagation && con.meta.nnz_conj == 3
             triangle = _triangle_vertices(conj)
 
             if triangle !== nothing
