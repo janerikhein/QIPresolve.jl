@@ -41,7 +41,7 @@ for instance_path in "${instances[@]}"; do
         sbatch \
             --partition=small \
             --constraint=Gold6338 \
-            --time=01:05:00 \
+            --time=02:20:00 \
             --nodes=1 \
             --cpu-freq=medium-medium:Performance \
             --threads-per-core=1 \

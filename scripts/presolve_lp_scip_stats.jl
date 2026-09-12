@@ -12,7 +12,7 @@ import MathOptInterface.FileFormats as FF
 import QIPresolve as QIP
 import SCIP
 
-const SCIP_TIME_LIMIT_SEC = 1800.0
+const SCIP_TIME_LIMIT_SEC = 3600.0
 const USAGE = "Usage: julia --project=. scripts/presolve_lp_scip_stats.jl instance.lp"
 
 seconds_since(start_time) = (time_ns() - start_time) / 1.0e9
