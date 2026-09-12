@@ -28,7 +28,7 @@ for instance_path in "${instances[@]}"; do
         printf -v command \
             'cd %q && %q --project=. scripts/presolve_lp_scip_stats.jl %q' \
             "$project_dir" \
-            "$julia_bin" \
+            "$julia_dir" \
             "$instance_path"
 
         # Append arbitrary arguments passed after INSTANCE_DIR RESULTS_DIR
