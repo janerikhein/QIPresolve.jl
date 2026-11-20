@@ -1,0 +1,25 @@
+Components to implement
+
+Reader & Writer
+
+- LP file Reader
+- LP file Writer
+
+Connectors
+
+- SCIP connector as plugin
+
+
+Main source features
+
+- Utilize sparse matrices as main matrix format
+- For parity reductions utilize preclustering into independent Components
+- also implement basic probing 
+    - identify infeasibility in subproblem -> fix parity in main    
+    - identify fixed parity in subproblem -> add implication in main
+- also implement primal heuristic mode
+    - diving mode: for each literal consider reachable literals and score them based on parity occurence.
+    - fix highest scoring literal to 1 and propagate changes 
+
+
+ 

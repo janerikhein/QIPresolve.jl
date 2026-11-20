@@ -20,6 +20,7 @@ Base.@kwdef struct CliConfig
     input_path::String
     output_path::Union{Nothing, String} = nothing
     out_dir::Union{Nothing, String} = nothing
+    max_parity_phases::Int = QIP.PresolveConfig.DEFAULT_MAX_PARITY_PHASES
     residue_strategy::Symbol = QIP.PresolveConfig.DEFAULT_PRESOLVE_RESIDUE_STRATEGY
     residue_threshold::Int = QIP.PresolveConfig.DEFAULT_PRESOLVE_RESIDUE_THRESHOLD
     treewidth_threshold::Int = QIP.PresolveConfig.DEFAULT_PRESOLVE_TREEWIDTH_THRESHOLD
@@ -33,6 +34,7 @@ function usage()
     Options:
       --output path                Explicit JSON output path
       --out-dir dir                Directory for the default <instance>_stats.json
+      --max-parity-phases n        Total parity phases allowed (default 100)
       --residue-strategy name      small_primes, powers_of_two, or divisor_free
       --residue-threshold n        Maximum residue modulus threshold
       --treewidth-threshold n      Residue DP treewidth threshold
@@ -74,6 +76,7 @@ function parse_args(args::Vector{String})
     positionals = String[]
     output_path = nothing
     out_dir = nothing
+    max_parity_phases = QIP.PresolveConfig.DEFAULT_MAX_PARITY_PHASES
     residue_strategy = QIP.PresolveConfig.DEFAULT_PRESOLVE_RESIDUE_STRATEGY
     residue_threshold = QIP.PresolveConfig.DEFAULT_PRESOLVE_RESIDUE_THRESHOLD
     treewidth_threshold = QIP.PresolveConfig.DEFAULT_PRESOLVE_TREEWIDTH_THRESHOLD
@@ -87,6 +90,8 @@ function parse_args(args::Vector{String})
                 output_path = value
             elseif option == "--out-dir"
                 out_dir = value
+            elseif option == "--max-parity-phases"
+                max_parity_phases = _parse_int(value, option)
             elseif option == "--residue-strategy"
                 residue_strategy = _parse_strategy(value)
             elseif option == "--residue-threshold"
@@ -111,6 +116,7 @@ function parse_args(args::Vector{String})
         input_path = input_path,
         output_path = output_path === nothing ? nothing : abspath(output_path),
         out_dir = out_dir === nothing ? nothing : abspath(out_dir),
+        max_parity_phases = max_parity_phases,
         residue_strategy = residue_strategy,
         residue_threshold = residue_threshold,
         treewidth_threshold = treewidth_threshold,
@@ -260,7 +266,9 @@ function run_tracked_presolve!(model::PC.QPModel, config::CliConfig)
         moduli = PC._generate_residue_moduli(config.residue_strategy, config.residue_threshold)
         propagator = PC.PropagationManager(PC.VarId[])
 
-        PC.parity_presolve!(model, propagator, postsolver, parity_stats_accumulator)
+        parity_result = PC.parity_presolve!(model, propagator, postsolver, parity_stats_accumulator;
+            max_parity_phases = config.max_parity_phases)
+        remaining_phases = config.max_parity_phases - parity_result.phases_run
 
         if !model.infeasible
             residue_result = PC._residue_presolve_pass!(
@@ -272,13 +280,15 @@ function run_tracked_presolve!(model::PC.QPModel, config::CliConfig)
                 treewidth_threshold = config.treewidth_threshold,
             )
 
-            while !model.infeasible && residue_result.tightened_to_equality
+            while remaining_phases > 0 && !model.infeasible && residue_result.tightened_to_equality
                 parity_result = PC.parity_presolve!(
                     model,
                     propagator,
                     postsolver,
-                    parity_stats_accumulator,
+                    parity_stats_accumulator;
+                    max_parity_phases = remaining_phases,
                 )
+                remaining_phases -= parity_result.phases_run
                 model.infeasible && break
                 parity_result.domains_changed || break
 
@@ -306,6 +316,7 @@ end
 
 function parameters_dict(config::CliConfig)
     return Dict{String, Any}(
+        "max_parity_phases" => config.max_parity_phases,
         "residue_strategy" => string(config.residue_strategy),
         "residue_threshold" => config.residue_threshold,
         "treewidth_threshold" => config.treewidth_threshold,

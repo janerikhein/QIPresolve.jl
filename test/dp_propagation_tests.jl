@@ -334,11 +334,11 @@ end
         con,
         Dict(1 => PC.IntVar(1.0, 2.0), 2 => PC.IntVar(0.0, 1.0)),
     )
-    @test_throws ArgumentError PC.compute_nonlinear_residue_sets(
-        3,
-        con,
-        Dict(1 => PC.IntVar(0.0, Inf), 2 => PC.IntVar(0.0, 1.0)),
-    )
+    for domain in (PC.IntVar(10.0, Inf), PC.IntVar(-Inf, -10.0), PC.IntVar(-Inf, Inf))
+        bounds = Dict(1 => domain, 2 => PC.IntVar(0.0, 1.0))
+        @test only(PC.compute_nonlinear_residue_sets(3, con, bounds)).residues == trues(3)
+        @test bounds[1] == domain
+    end
     @test_throws ArgumentError PC.compute_nonlinear_residue_sets(
         3,
         con,
@@ -494,7 +494,6 @@ end
         1 => PC.IntVar(0.0, 5.0),
         2 => PC.IntVar(0.0, 2.0),
     )
-    @test standardized.var_ubs == Dict(1 => 5, 2 => 2)
     @test standardized.constraint_shift == PC.eval_full(con.qe, lower_point)
     @test standardized.objective_shift == PC.eval_full(obj, lower_point) - obj.constant
     @test standardized.con.lhs == con.lhs - standardized.constraint_shift
@@ -510,6 +509,28 @@ end
 
         @test PC.eval_full(standardized.con.qe, shifted) + standardized.constraint_shift ==
             PC.eval_full(con.qe, original)
+    end
+end
+
+@testset "mixed bounded and unbounded bilinear residues match enumeration" begin
+    # Evaluate 2xy + x with x in 3:5 and one full period of y in its original domain.
+    expr = PC.QuadExpr(DPQuadTerm[(2.0, 1, 2)], DPLinTerm[(1.0, 1)])
+    con = PC.Constraint(1, expr, 1.0, 20.0)
+    for (domain, start) in (
+        (PC.IntVar(25.0, Inf), 25),
+        (PC.IntVar(-Inf, -25.0), -40),
+        (PC.IntVar(-Inf, Inf), -5),
+    )
+        bounds = Dict(1 => PC.IntVar(3.0, 5.0), 2 => domain)
+        original_bounds = copy(bounds)
+        standardized = PC._standardize_residue_constraint(con, bounds)
+        @test standardized.constraint_shift == 3
+        for m in (8, 12)
+            result = PC._compute_achievable_residues(m, standardized.con, standardized.var_bounds)
+            expected = residue_bits(m, [2 * x * y + x for x in 3:5 for y in start:(start + m - 1)])
+            @test circshift(result.residues, standardized.constraint_shift) == expected
+        end
+        @test bounds == original_bounds
     end
 end
 
@@ -682,8 +703,9 @@ end
     )
     PC.residue_presolve!(nonfinite_model, :powers_of_two; threshold = 2)
     @test !nonfinite_model.infeasible
-    @test nonfinite_model.cons[1].lhs == 1.0
-    @test nonfinite_model.cons[1].rhs == 9.0
+    @test nonfinite_model.cons[1].lhs == 2.0
+    @test nonfinite_model.cons[1].rhs == 8.0
+    @test nonfinite_model.vars[1] == PC.IntVar(0.0, Inf)
 
     fractional_model = PC.QPModel(
         Dict{PC.VarId, PC.IntVar}(

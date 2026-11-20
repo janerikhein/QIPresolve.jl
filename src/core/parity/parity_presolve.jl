@@ -444,6 +444,9 @@ function parity_presolve_phase!(
         parity_strategy = parity_strategy,
     )
     if isempty(parity_model.pos_to_var_id) || isempty(parity_model.cons)
+        # A row with no parity variables can still assert 0 = 1.
+        cleanup!(parity_model, stats_accumulator, :propagation)
+        model.infeasible = parity_model.infeasible
         finalize_phase!(propagator)
         return (changed = normalization_changed, fixed_parities = 0, pattern_rewritten_vars = 0)
     end
@@ -525,12 +528,14 @@ function parity_presolve!(
     model::QPModel;
     collect_stats::Bool = false,
     parity_strategy = DEFAULT_PRESOLVE_PARITY_STRATEGY,
+    max_parity_phases::Integer = DEFAULT_MAX_PARITY_PHASES,
 )
     return parity_presolve!(
         model,
         nothing;
         collect_stats = collect_stats,
         parity_strategy = parity_strategy,
+        max_parity_phases = max_parity_phases,
     )
 end
 
@@ -539,6 +544,7 @@ function parity_presolve!(
     propagator::PropagationManager;
     collect_stats::Bool = false,
     parity_strategy = DEFAULT_PRESOLVE_PARITY_STRATEGY,
+    max_parity_phases::Integer = DEFAULT_MAX_PARITY_PHASES,
 )
     return parity_presolve!(
         model,
@@ -546,31 +552,32 @@ function parity_presolve!(
         nothing;
         collect_stats = collect_stats,
         parity_strategy = parity_strategy,
+        max_parity_phases = max_parity_phases,
     )
 end
 
 """
-    parity_presolve!(model, postsolver=nothing; collect_stats=false, parity_strategy=:full)
-    parity_presolve!(model, propagator, postsolver=nothing; collect_stats=false, parity_strategy=:full)
+    parity_presolve!(model, postsolver=nothing; collect_stats=false, parity_strategy=:full, max_parity_phases=100)
+    parity_presolve!(model, propagator, postsolver=nothing; collect_stats=false, parity_strategy=:full, max_parity_phases=100)
 
-Run parity presolve to a fixed point.
+Run parity presolve up to the configured phase limit.
 
-Repeatedly execute parity presolve phases until `model` becomes infeasible or a
-phase reports no further parity-driven changes. The two-argument form allocates a
-fresh propagation manager; the three-argument form reuses `propagator`.
+Stop when a phase reports no changes, detects infeasibility, or reaches the phase
+limit. A fresh propagation manager is allocated unless `propagator` is supplied.
 
 # Arguments
 - `model`: Quadratic model mutated in place.
 - `propagator`: Optional propagation manager reused across phases.
 - `postsolver`: Optional `ParityPostsolver` that records reconstruction data
   across all phases.
+- `max_parity_phases`: Maximum number of phases, including the convergence check. Zero skips parity.
 - `collect_stats`: Whether to allocate and update parity presolve statistics.
 - `parity_strategy`: One of `:mod2_basic`, `:mod4_basic`, or `:full`.
 
 # Returns
 - A named tuple with fields `changed`, `domains_changed`,
   `coefficient_changed_constraint_ids`, `fixed_parities`,
-  `pattern_rewritten_vars`, and `infeasible`.
+  `pattern_rewritten_vars`, `phases_run`, and `infeasible`.
 
 # Side Effects
 - Mutates `model`.
@@ -589,6 +596,7 @@ function parity_presolve!(
     postsolver::Union{Nothing, ParityPostsolver};
     collect_stats::Bool = false,
     parity_strategy = DEFAULT_PRESOLVE_PARITY_STRATEGY,
+    max_parity_phases::Integer = DEFAULT_MAX_PARITY_PHASES,
 )
     return parity_presolve!(
         model,
@@ -596,6 +604,7 @@ function parity_presolve!(
         postsolver;
         collect_stats = collect_stats,
         parity_strategy = parity_strategy,
+        max_parity_phases = max_parity_phases,
     )
 end
 
@@ -605,6 +614,7 @@ function parity_presolve!(
     postsolver::Union{Nothing, ParityPostsolver};
     collect_stats::Bool = false,
     parity_strategy = DEFAULT_PRESOLVE_PARITY_STRATEGY,
+    max_parity_phases::Integer = DEFAULT_MAX_PARITY_PHASES,
 )
     stats_accumulator = collect_stats ? _ParityStatsAccumulator() : nothing
     return parity_presolve!(
@@ -613,6 +623,7 @@ function parity_presolve!(
         postsolver,
         stats_accumulator;
         parity_strategy = parity_strategy,
+        max_parity_phases = max_parity_phases,
     )
 end
 
@@ -623,28 +634,31 @@ function parity_presolve!(
     stats_accumulator::Union{Nothing, _ParityStatsAccumulator},
     ;
     parity_strategy = DEFAULT_PRESOLVE_PARITY_STRATEGY,
+    max_parity_phases::Integer = DEFAULT_MAX_PARITY_PHASES,
 )
     parity_strategy = _normalize_parity_strategy(parity_strategy)
-    before_state = _model_state_signature(model)
-    before_domains = _var_domain_snapshot(model)
-    before_signatures = _constraint_coefficient_signatures(model)
-
-    if model.infeasible
+    max_parity_phases >= 0 || throw(ArgumentError("max_parity_phases must be nonnegative"))
+    if model.infeasible || iszero(max_parity_phases)
         return (
             changed = false,
             domains_changed = false,
             coefficient_changed_constraint_ids = Set{Int}(),
             fixed_parities = 0,
             pattern_rewritten_vars = 0,
-            infeasible = true,
+            infeasible = model.infeasible,
+            phases_run = 0,
             parity_stats = _parity_stats(stats_accumulator),
         )
     end
 
+    before_state = _model_state_signature(model)
+    before_domains = _var_domain_snapshot(model)
+    before_signatures = _constraint_coefficient_signatures(model)
     changed = false
     fixed_parities = 0
     pattern_rewritten_vars = 0
 
+    phases_run = 0
     start_time = time()
     _record_parity_presolve_round!(stats_accumulator)
 
@@ -653,7 +667,8 @@ function parity_presolve!(
         normalize!(model, postsolver)
         changed = before_state != _model_state_signature(model)
 
-        while !model.infeasible
+        while !model.infeasible && phases_run < max_parity_phases
+            phases_run += 1
             stats = parity_presolve_phase!(
                 model,
                 propagator,
@@ -680,6 +695,7 @@ function parity_presolve!(
             fixed_parities = fixed_parities,
             pattern_rewritten_vars = pattern_rewritten_vars,
             infeasible = model.infeasible,
+            phases_run = phases_run,
             parity_stats = _parity_stats(stats_accumulator),
         )
     finally

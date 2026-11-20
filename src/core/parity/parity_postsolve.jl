@@ -275,8 +275,8 @@ register_fixed_var!(postsolver::ParityPostsolver, var_id::VarId, value::Float64)
 
 Add a constant reconstruction offset to `var_id`.
 
-Accumulate `offset` into the constant term applied after rebuilding the
-high-order and stored-bit components of `var_id`.
+The offset applies to the current high-order variable, so each previously
+stored low-order bit doubles its weight in the original variable.
 
 # Arguments
 - `postsolver`: Postsolver storage mutated in place.
@@ -291,7 +291,8 @@ high-order and stored-bit components of `var_id`.
 """
 function add_reconstruction_offset!(postsolver::ParityPostsolver, var_id::VarId, offset::Float64)
     offset == 0.0 && return postsolver
-    _tracked_var_data!(postsolver, var_id).additive_offset += offset
+    data = _tracked_var_data!(postsolver, var_id)
+    data.additive_offset += ldexp(offset, length(data.bits))
     return postsolver
 end
 
@@ -337,16 +338,12 @@ function _resolve_var_value(
 
     push!(active, var_id)
     var_data = _get_var_data(postsolver, var_id)
-    high_order = _high_order_value(postsolver, var_id, var_data, solution, cache, active)
-
-    bit_offset = 0.0
-    bit_weight = 1.0
-    for bit in var_data.bits
-        bit_offset += bit_weight * _evaluate_stored_bit(bit, postsolver, solution, cache, active)
-        bit_weight *= 2.0
+    value = _high_order_value(postsolver, var_id, var_data, solution, cache, active)
+    for bit in Iterators.reverse(var_data.bits)
+        value = 2.0 * value + _evaluate_stored_bit(bit, postsolver, solution, cache, active)
     end
 
-    value = high_order * bit_weight + bit_offset + var_data.additive_offset
+    value += var_data.additive_offset
     cache[var_id] = value
     delete!(active, var_id)
     return value

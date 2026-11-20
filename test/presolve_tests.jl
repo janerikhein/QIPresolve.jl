@@ -216,6 +216,23 @@ end
     @test model.vars == vars
 end
 
+@testset "presolve! detects the mod-9 obstruction for unbounded positive integers" begin
+    # x² + y² - 9k cannot equal 3 modulo 9. RHS 4 has the solution (2, 3, 1).
+    for (rhs, infeasible) in ((3.0, true), (4.0, false))
+        vars = Dict(i => PC.IntVar(1.0, Inf) for i in 1:3)
+        expr = PC.QuadExpr(PresolveQuadTerm[(1.0, 1, 1), (1.0, 2, 2)], PresolveLinTerm[(-9.0, 3)])
+        con = PC.Constraint(presolve_next_con_id(), expr, rhs, rhs)
+        model = PC.QPModel(copy(vars), [con], presolve_empty_objective(), :min)
+
+        result = QIPresolve.presolve!(model; collect_stats = true)
+
+        @test result.model.infeasible == infeasible
+        @test result.residue_stats.infeasibility_detected == infeasible
+        @test result.residue_stats.num_constraints_processed == 1
+        @test result.model.vars == vars
+    end
+end
+
 @testset "presolve! uses residue-created equalities to trigger parity" begin
     vars = Dict{PC.VarId, PC.IntVar}(1 => PC.IntVar(0.0, 2.0))
     con = PC.Constraint(

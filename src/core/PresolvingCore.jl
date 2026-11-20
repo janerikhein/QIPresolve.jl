@@ -15,6 +15,7 @@ and display utilities used throughout QIPresolve.
 module PresolvingCore
 
 using ..PresolveConfig:
+    DEFAULT_MAX_PARITY_PHASES,
     DEFAULT_PRESOLVE_PARITY_STRATEGY,
     DEFAULT_PRESOLVE_RESIDUE_STRATEGY,
     DEFAULT_PRESOLVE_RESIDUE_THRESHOLD,

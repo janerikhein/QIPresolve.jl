@@ -31,7 +31,6 @@ end
 struct _StandardizedResidueConstraint
     con::Constraint
     var_bounds::Dict{VarId, IntVar}
-    var_ubs::Dict{VarId, Int}
     constraint_shift::Int
     objective_shift::Float64
 end
@@ -399,6 +398,15 @@ populate_local_contribution(
 )
 fold_on(set::ConditionedResidueSet, target_id::VarId) = fold_on!(set, target_id)
 
+function _is_unbounded_residue_domain(var::IntVar)
+    return var.lb < var.ub && (var.lb == -Inf || var.ub == Inf)
+end
+
+function _has_supported_residue_domain(var::IntVar)
+    return _is_unbounded_residue_domain(var) ||
+        (isinteger(var.lb) && isinteger(var.ub) && var.lb <= var.ub)
+end
+
 function _validate_residue_bounds(
         modulus::Int,
         con::Constraint,
@@ -409,15 +417,17 @@ function _validate_residue_bounds(
         haskey(var_bounds, var_id) ||
             throw(ArgumentError("missing bounds for variable $var_id"))
         var = var_bounds[var_id]
+        if _is_unbounded_residue_domain(var)
+            var_ubs[var_id] = modulus - 1
+            continue
+        end
         var.lb == 0.0 ||
             throw(ArgumentError("variable $var_id must have lower bound 0, got $(var.lb)"))
-        isfinite(var.ub) ||
-            throw(ArgumentError("variable $var_id must have finite upper bound, got $(var.ub)"))
         isinteger(var.ub) ||
             throw(ArgumentError("variable $var_id must have integer upper bound, got $(var.ub)"))
         var.ub >= 0.0 ||
             throw(ArgumentError("variable $var_id must have nonnegative upper bound, got $(var.ub)"))
-        var_ubs[var_id] = min(trunc(Int, var.ub), modulus - 1)
+        var_ubs[var_id] = var.ub >= modulus - 1 ? modulus - 1 : Int(var.ub)
     end
     return var_ubs
 end
@@ -481,7 +491,9 @@ end
     compute_nonlinear_residue_sets(m, con, var_bounds) -> Vector{ResidueDPResult}
 
 Compute achievable residue sets modulo `m` for each nonlinear interaction
-component of `con`.
+component of `con`. Finite integer intervals must be shifted to start at zero.
+An integer interval unbounded in either direction contributes all residues
+`0:m-1`.
 """
 function compute_nonlinear_residue_sets(
         m::Integer,
@@ -511,27 +523,6 @@ function compute_nonlinear_residue_sets(
     return results
 end
 
-function _validate_residue_domain(var_id::VarId, var::IntVar)
-    isfinite(var.lb) ||
-        throw(ArgumentError("variable $var_id must have finite lower bound, got $(var.lb)"))
-    isfinite(var.ub) ||
-        throw(ArgumentError("variable $var_id must have finite upper bound, got $(var.ub)"))
-    isinteger(var.lb) ||
-        throw(ArgumentError("variable $var_id must have integer lower bound, got $(var.lb)"))
-    isinteger(var.ub) ||
-        throw(ArgumentError("variable $var_id must have integer upper bound, got $(var.ub)"))
-    var.lb <= var.ub ||
-        throw(ArgumentError("variable $var_id has inconsistent bounds [$(var.lb), $(var.ub)]"))
-    return nothing
-end
-
-function _has_supported_residue_domain(var::IntVar)
-    return isfinite(var.lb) &&
-        isfinite(var.ub) &&
-        isinteger(var.lb) &&
-        isinteger(var.ub)
-end
-
 function _standardize_residue_constraint(
         con::Constraint,
         var_bounds::Dict{VarId, IntVar},
@@ -544,26 +535,22 @@ function _standardize_residue_constraint(
     shift_expr = deepcopy(con.qe)
     shifted_obj = obj_expr === nothing ? nothing : deepcopy(obj_expr)
     shifted_bounds = Dict{VarId, IntVar}()
-    shifted_ubs = Dict{VarId, Int}()
     var_ids = sort!(collect(vars(con.qe)))
 
     for var_id in var_ids
         haskey(var_bounds, var_id) ||
             throw(ArgumentError("missing bounds for variable $var_id"))
         var = var_bounds[var_id]
-        _validate_residue_domain(var_id, var)
+        _has_supported_residue_domain(var) ||
+            throw(ArgumentError("unsupported residue domain for variable $var_id: [$(var.lb), $(var.ub)]"))
 
-        lb = trunc(Int, var.lb)
-        ub = trunc(Int, var.ub)
-        width = ub - lb
-        offset = Float64(lb)
+        # An unbounded interval already contains every residue, so it needs no shift.
+        offset = _is_unbounded_residue_domain(var) ? 0.0 : var.lb
+        shifted_bounds[var_id] = IntVar(0.0, var.ub - var.lb)
 
         affine_transform!(shifted_con, var_id, 1.0, offset)
         affine_transform!(shift_expr, var_id, 1.0, offset)
         shifted_obj !== nothing && affine_transform!(shifted_obj, var_id, 1.0, offset)
-
-        shifted_bounds[var_id] = IntVar(0.0, Float64(width))
-        shifted_ubs[var_id] = width
     end
 
     isinteger(shift_expr.constant) ||
@@ -574,7 +561,6 @@ function _standardize_residue_constraint(
     return _StandardizedResidueConstraint(
         shifted_con,
         shifted_bounds,
-        shifted_ubs,
         constraint_shift,
         objective_shift,
     )
@@ -866,6 +852,8 @@ end
     residue_presolve_constraint!(model, con, moduli, stats_accumulator; treewidth_threshold=typemax(Int))
 
 Run residue-based bound tightening on a single constraint of `model`.
+Variables with an unbounded integer domain range over one full period per modulus
+during residue evaluation. Their model bounds are preserved.
 
 # Returns
 - A named tuple with `changed`, `tightened_to_equality`, `processed`, and

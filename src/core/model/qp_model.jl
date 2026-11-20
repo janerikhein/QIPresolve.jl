@@ -142,6 +142,47 @@ where `offset` is `0` for even and `1` for odd.
 """
 fix_parities!(model::QPModel, propagator::PropagationManager) = fix_parities!(model, propagator, nothing)
 
+# Each participating variable is replaced once by 2q+b or 2q+1-b. Its
+# expansion has absolute coefficient sum at most 4 (16 for a product).
+# Bound the intermediates before changing any member of an unbounded group.
+function _parity_rewrite_fits(qe::QuadExpr, ids, finite_bounds...)
+    any(id -> has_var(qe, id), ids) || return true
+    limit = maxintfloat() / 16
+    largest = 0.0
+    count = 0
+    for value in Iterators.flatten((finite_bounds, (qe.constant,), lin(qe), quad(qe)))
+        iszero(value) && continue
+        isfinite(value) || return false
+        count += 1
+        largest = max(largest, abs(value))
+        if !isinteger(value)
+            # Float64 coefficients are dyadic. Allow for their fractional bits
+            # when bounding exact additions, including shifts of a row bound.
+            den = denominator(Rational{BigInt}(value))
+            limit = min(limit, ldexp(maxintfloat() / 16, -trailing_zeros(den)))
+        end
+    end
+    return count == 0 || largest < limit / count
+end
+
+function _unbounded_parity_rewrite_fits(model::QPModel, ids)
+    for id in ids
+        var = model.vars[id]
+        var.lb <= var.ub && var.lb < Inf && var.ub > -Inf || return false
+        # Leave room for rounding each finite endpoint and forming linking rows.
+        for endpoint in (var.lb, var.ub)
+            isfinite(endpoint) && abs(endpoint) >= maxintfloat() / 4 && return false
+        end
+    end
+    _parity_rewrite_fits(model.obj_expr, ids) || return false
+    for con in model.cons
+        lower = isfinite(con.lhs) ? abs(con.lhs) : 0.0
+        upper = isfinite(con.rhs) ? abs(con.rhs) : 0.0
+        _parity_rewrite_fits(con.qe, ids, lower, upper) || return false
+    end
+    return true
+end
+
 function fix_parities!(
     model::QPModel,
     propagator::PropagationManager,
@@ -159,8 +200,11 @@ function fix_parities!(
 
         offset = val ? 1.0 : 0.0
         var = model.vars[lit.vid]
-        new_lb = ceil((var.lb - offset) / 2.0)
-        new_ub = floor((var.ub - offset) / 2.0)
+        if !isfinite(var.lb) || !isfinite(var.ub)
+            _unbounded_parity_rewrite_fits(model, (lit.vid,)) || continue
+        end
+        new_lb = ceil((ceil(var.lb) - offset) / 2.0)
+        new_ub = floor((floor(var.ub) - offset) / 2.0)
         new_lb == 0.0 && (new_lb = 0.0)
         new_ub == 0.0 && (new_ub = 0.0)
 
@@ -265,7 +309,9 @@ function fix_parity_patterns!(
 
         component_lits = [propagator.pos_to_lit[pos] for pos in component_positions]
         all(haskey(model.vars, lit.vid) for lit in component_lits) || continue
-        all(isfinite(model.vars[lit.vid].lb) && isfinite(model.vars[lit.vid].ub) for lit in component_lits) || continue
+        if any(lit -> !isfinite(model.vars[lit.vid].lb) || !isfinite(model.vars[lit.vid].ub), component_lits)
+            _unbounded_parity_rewrite_fits(model, [lit.vid for lit in component_lits]) || continue
+        end
         @assert length(unique(lit.vid for lit in component_lits)) == length(component_lits)
 
         b_scc = add_var!(model, IntVar(0.0, 1.0))
@@ -273,10 +319,10 @@ function fix_parity_patterns!(
 
         for lit in component_lits
             var = model.vars[lit.vid]
-            e_lo = ceil(var.lb / 2.0)
-            e_hi = floor(var.ub / 2.0)
-            o_lo = ceil((var.lb - 1.0) / 2.0)
-            o_hi = floor((var.ub - 1.0) / 2.0)
+            e_lo = ceil(ceil(var.lb) / 2.0)
+            e_hi = floor(floor(var.ub) / 2.0)
+            o_lo = ceil((ceil(var.lb) - 1.0) / 2.0)
+            o_hi = floor((floor(var.ub) - 1.0) / 2.0)
 
             if lit.neg
                 l0, u0 = o_lo, o_hi
@@ -290,24 +336,20 @@ function fix_parity_patterns!(
                 lin_transform!(model, lit.vid, b_scc, 2.0, 1.0)
             end
 
-            m = max(0.0, u0 - l1, u1 - l0)
             new_lb = min(l0, l1)
             new_ub = max(u0, u1)
             new_lb == 0.0 && (new_lb = 0.0)
             new_ub == 0.0 && (new_ub = 0.0)
 
-            add_constraint!(
-                model,
-                lin_expr(Tuple{Float64, VarId}[(1.0, lit.vid), (m, b_scc)]),
-                l0,
-                u1 + m,
-            )
-            add_constraint!(
-                model,
-                lin_expr(Tuple{Float64, VarId}[(1.0, lit.vid), (-m, b_scc)]),
-                l1 - m,
-                u0,
-            )
+            if isfinite(new_lb) && isfinite(new_ub)
+                m = max(0.0, u0 - l1, u1 - l0)
+                add_constraint!(model, lin_expr([(1.0, lit.vid), (m, b_scc)]), l0, u1 + m)
+                add_constraint!(model, lin_expr([(1.0, lit.vid), (-m, b_scc)]), l1 - m, u0)
+            elseif l0 != l1
+                add_constraint!(model, lin_expr([(1.0, lit.vid), (l0 - l1, b_scc)]), l0, Inf)
+            elseif u0 != u1
+                add_constraint!(model, lin_expr([(1.0, lit.vid), (u0 - u1, b_scc)]), -Inf, u0)
+            end
             set_var_bounds!(model, lit.vid, new_lb, new_ub)
             nrewritten += 1
         end

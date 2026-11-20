@@ -433,6 +433,55 @@ end
     @test isempty(model.cons)
 end
 
+@testset "unbounded parity patterns preserve domains, objective and reconstruction" begin
+    domains = (
+        (PC.IntVar(1, Inf), PC.IntVar(0, Inf)),
+        (PC.IntVar(-Inf, -1), PC.IntVar(-Inf, 2)),
+        (PC.IntVar(-Inf, Inf), PC.IntVar(-Inf, Inf)),
+        (PC.IntVar(-Inf, 3), PC.IntVar(-3, Inf)),
+        (PC.IntVar(3, 5), PC.IntVar(0, Inf)),
+    )
+    for (first, second) in domains, negated in (false, true)
+        bounds = Dict(1 => first, 2 => second)
+        objective = PC.QuadExpr(ParityQuadTerm[(2.0, 1, 2)], ParityLinTerm[(3.25, 1), (-1.0, 2)])
+        model = PC.QPModel(copy(bounds), PC.Constraint[], deepcopy(objective), :min)
+        manager = parity_prepare_manager(PC.VarLit(1, false), PC.VarLit(2, negated))
+        postsolver = PC.ParityPostsolver(keys(bounds))
+        @test PC.fix_parity_patterns!(model, manager, postsolver) == 2
+        for b in 0:1, u in -3:3, v in -3:3
+            point = [u, v, b]
+            x = [2u + b, 2v + (negated ? 1 - b : b)]
+            original_feasible = first.lb <= x[1] <= first.ub && second.lb <= x[2] <= second.ub
+            reduced_feasible = all(bound.lb <= point[id] <= bound.ub for (id, bound) in model.vars) &&
+                all(con.lhs <= PC.eval_full(con.qe, point) <= con.rhs for con in model.cons)
+            @test original_feasible == reduced_feasible
+            @test PC.eval_full(objective, x) == PC.eval_full(model.obj_expr, point)
+            @test PC.postsolve(postsolver, Dict(enumerate(point))) == Dict(enumerate(x))
+        end
+    end
+end
+
+@testset "unbounded parity rewrites stop before unsafe coefficient growth" begin
+    vars = Dict(1 => PC.IntVar(0, Inf), 2 => PC.IntVar(0, Inf))
+    eq = PC.Constraint(1, PC.QuadExpr(ParityQuadTerm[], [(1.0, 1), (-1.0, 2)]), 0.0, 0.0)
+    objective = PC.QuadExpr(ParityQuadTerm[(1.0, 1, 1)], ParityLinTerm[])
+    model = PC.QPModel(copy(vars), [eq], objective, :min)
+    result = PC.parity_presolve!(model)
+    @test 1 < result.phases_run < 100
+    @test !result.infeasible
+    @test PC.get_quad_coeff(model.obj_expr, 1, 1) == big(4)^(result.phases_run - 1)
+
+    # A rejected group leaves even its first member and the postsolver untouched.
+    model = PC.QPModel(copy(vars), PC.Constraint[],
+        PC.QuadExpr(ParityQuadTerm[], [(maxintfloat(), 2)]), :min)
+    manager = parity_prepare_manager(PC.VarLit(1, false), PC.VarLit(2, false))
+    before = PC._model_state_signature(model)
+    postsolver = PC.ParityPostsolver(keys(model.vars))
+    @test PC.fix_parity_patterns!(model, manager, postsolver) == 0
+    @test PC._model_state_signature(model) == before
+    @test all(isempty(data.bits) for data in values(postsolver.var_data))
+end
+
 @testset "parity_presolve! removes fixed parity singletons during normalization" begin
     vars = Dict{PC.VarId, PC.IntVar}(1 => PC.IntVar(0.0, 1.0))
     con = PC.Constraint(
@@ -671,6 +720,23 @@ end
     @test stats.infeasible
 end
 
+@testset "parity_presolve! checks constant XOR rows after fixing odd squares" begin
+    # For x² + y² - 16k = rhs, both residues force x and y odd.
+    # After substitution the XOR row is 0 = 1 for 14 and 0 = 0 for 2.
+    for (rhs, infeasible) in ((14.0, true), (2.0, false))
+        vars = Dict(i => PC.IntVar(1.0, Inf) for i in 1:3)
+        expr = PC.QuadExpr(ParityQuadTerm[(1.0, 1, 1), (1.0, 2, 2)], ParityLinTerm[(-16.0, 3)])
+        con = PC.Constraint(parity_next_con_id(), expr, rhs, rhs)
+        model = PC.QPModel(vars, [con], parity_empty_objective(), :min)
+
+        result = PC.parity_presolve!(model; collect_stats = true)
+
+        @test model.infeasible == infeasible
+        @test result.parity_stats.infeasibility_detected == infeasible
+        @test result.parity_stats.infeasibility_source == (infeasible ? :propagation : :none)
+    end
+end
+
 @testset "parity_presolve! reports initially infeasible models" begin
     model = PC.QPModel(
         Dict{PC.VarId, PC.IntVar}(),
@@ -797,6 +863,16 @@ end
     original_solution = PC.postsolve(postsolver, Dict{PC.VarId, Float64}(1 => 2.0))
 
     @test original_solution == Dict{PC.VarId, Float64}(1 => 9.0)
+end
+
+@testset "postsolve shifts the current quotient and handles long bit histories" begin
+    postsolver = PC.ParityPostsolver([1])
+    PC.append_fixed_bit!(postsolver, 1, true)
+    PC.add_reconstruction_offset!(postsolver, 1, 3.0)
+    for _ in 1:1024
+        PC.append_fixed_bit!(postsolver, 1, false)
+    end
+    @test PC.postsolve(postsolver, Dict(1 => 0.0)) == Dict(1 => 7.0)
 end
 
 @testset "postsolve evaluates live binary bit references" begin

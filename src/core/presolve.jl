@@ -156,7 +156,7 @@ end
 
 """
     presolve!(model; enable_parity=true, enable_residue=true, parity_strategy,
-              residue_strategy, residue_threshold, treewidth_threshold, collect_stats=false)
+              max_parity_phases, residue_strategy, residue_threshold, treewidth_threshold, collect_stats=false)
 
 Run the combined parity and residue presolve pipeline.
 
@@ -170,17 +170,21 @@ defined in `QIPresolve.PresolveConfig`.
 Set `enable_parity=false` or `enable_residue=false` to skip that reduction
 entirely, including its strategy validation and statistics collection. Shared
 normalization and postsolve tracking still run, even with both reductions off.
+All parity rounds share `max_parity_phases` phases (default 100). A limit of
+zero skips parity. Residue presolve can run after parity exhausts its budget.
 """
 function presolve!(
         model::QPModel;
         enable_parity::Bool = true,
         enable_residue::Bool = true,
         parity_strategy = DEFAULT_PRESOLVE_PARITY_STRATEGY,
+        max_parity_phases::Integer = DEFAULT_MAX_PARITY_PHASES,
         residue_strategy::Symbol = DEFAULT_PRESOLVE_RESIDUE_STRATEGY,
         residue_threshold::Integer = DEFAULT_PRESOLVE_RESIDUE_THRESHOLD,
         treewidth_threshold::Integer = DEFAULT_PRESOLVE_TREEWIDTH_THRESHOLD,
         collect_stats::Bool = false,
     )::PresolveResult
+    max_parity_phases >= 0 || throw(ArgumentError("max_parity_phases must be nonnegative"))
     enable_parity && (parity_strategy = _normalize_parity_strategy(parity_strategy))
     postsolver = ParityPostsolver(keys(model.vars))
     parity_stats_accumulator = collect_stats && enable_parity ? _ParityStatsAccumulator() : nothing
@@ -203,13 +207,14 @@ function presolve!(
 
     propagator = PropagationManager(VarId[])
 
-    enable_parity && parity_presolve!(
-        model,
-        propagator,
-        postsolver,
-        parity_stats_accumulator;
-        parity_strategy = parity_strategy,
-    )
+    remaining_phases = enable_parity ? max_parity_phases : 0
+    if remaining_phases > 0
+        parity_result = parity_presolve!(
+            model, propagator, postsolver, parity_stats_accumulator;
+            parity_strategy = parity_strategy, max_parity_phases = remaining_phases,
+        )
+        remaining_phases -= parity_result.phases_run
+    end
     (model.infeasible || !enable_residue) && return PresolveResult(
         model,
         postsolver,
@@ -226,14 +231,16 @@ function presolve!(
         treewidth_threshold = treewidth_threshold,
     )
 
-    while enable_parity && !model.infeasible && residue_stats.tightened_to_equality
+    while remaining_phases > 0 && !model.infeasible && residue_stats.tightened_to_equality
         parity_stats = parity_presolve!(
             model,
             propagator,
             postsolver,
             parity_stats_accumulator;
             parity_strategy = parity_strategy,
+            max_parity_phases = remaining_phases,
         )
+        remaining_phases -= parity_stats.phases_run
         model.infeasible && break
         parity_stats.domains_changed || break
 
