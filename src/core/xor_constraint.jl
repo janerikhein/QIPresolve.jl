@@ -624,24 +624,17 @@ Materialize `builder` into an `XorConstraint` using `var_to_pos`.
 """
 function build(builder::XorConstraintBuilder, nvars::Int, var_to_pos::Dict{VarId, Int})
     par = falses(nvars)
-    conj = falses(nvars, nvars)
-    is_pure_xor = true
-
     for (var_id, val) in builder.par
         val && (par[var_to_pos[var_id]] = true)
     end
 
+    any(values(builder.conj)) || return XorConstraint(par, builder.rhs)
+    conj = falses(nvars, nvars)
     for ((var_id_1, var_id_2), val) in builder.conj
-        conj[var_to_pos[var_id_1], var_to_pos[var_id_2]] = val
-        conj[var_to_pos[var_id_2], var_to_pos[var_id_1]] = val
-        is_pure_xor = false
+        val || continue
+        i, j = var_to_pos[var_id_1], var_to_pos[var_id_2]
+        conj[i, j] = conj[j, i] = true
     end
 
-    con = if is_pure_xor
-        XorConstraint(par, builder.rhs)
-    else
-        XorConstraint(par, conj, builder.rhs)
-    end
-
-    return con
+    return XorConstraint(par, conj, builder.rhs)
 end

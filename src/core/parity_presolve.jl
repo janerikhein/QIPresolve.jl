@@ -1,3 +1,5 @@
+using DataStructures: IntDisjointSets, find_root!
+
 const _CoefficientSignature = NamedTuple{
     (:lin_terms, :quad_terms),
     Tuple{
@@ -179,6 +181,13 @@ function get_builders(model::QPModel, con::Constraint; include_mod4::Bool = true
     return builder_mod2, builder_mod4
 end
 
+# Repeated IDs contribute to the existing column-ordering heuristic.
+function _builder_variables(builder::XorConstraintBuilder)
+    linear = (vid for (vid, active) in builder.par if active)
+    pairs = (pair for (pair, active) in builder.conj if active)
+    return Iterators.flatten((linear, Iterators.flatten(pairs)))
+end
+
 """
     count_builder_occurrences!(var_counts, builder)
 
@@ -207,18 +216,30 @@ function count_builder_occurrences!(
     var_counts::Dict{VarId, Int},
     builder::XorConstraintBuilder,
 )
-    for (vid, is_active) in builder.par
-        is_active || continue
+    for vid in _builder_variables(builder)
         var_counts[vid] = get(var_counts, vid, 0) + 1
     end
-
-    for ((vid_i, vid_j), is_active) in builder.conj
-        is_active || continue
-        var_counts[vid_i] = get(var_counts, vid_i, 0) + 1
-        var_counts[vid_j] = get(var_counts, vid_j, 0) + 1
-    end
-
     return var_counts
+end
+
+function _parity_builders(model::QPModel, parity_strategy)
+    include_mod4 = _parity_includes_mod4(_normalize_parity_strategy(parity_strategy))
+    builders = XorConstraintBuilder[]
+    for con in model.cons
+        is_equality(con) || continue
+        mod2, mod4 = get_builders(model, con; include_mod4)
+        push!(builders, mod2)
+        isnothing(mod4) || push!(builders, mod4)
+    end
+    return builders
+end
+
+_ordered_parity_vars(counts) = sort!(collect(keys(counts)); by = vid -> (-counts[vid], vid))
+
+function _materialize_parity_model(builders, var_ids)
+    positions = Dict(vid => pos for (pos, vid) in enumerate(var_ids))
+    cons = [build(builder, length(var_ids), positions) for builder in builders]
+    return ParityModel(positions, var_ids, cons)
 end
 
 """
@@ -250,32 +271,106 @@ function build_parity_model(
     model::QPModel;
     parity_strategy = DEFAULT_PRESOLVE_PARITY_STRATEGY,
 )
-    parity_strategy = _normalize_parity_strategy(parity_strategy)
-    include_mod4 = _parity_includes_mod4(parity_strategy)
-    con_builders = XorConstraintBuilder[]
-
-    for con in model.cons
-        !is_equality(con) && continue
-        builder_mod2, builder_mod4 = get_builders(model, con; include_mod4 = include_mod4)
-        push!(con_builders, builder_mod2)
-        builder_mod4 !== nothing && push!(con_builders, builder_mod4)
-    end
-
+    builders = _parity_builders(model, parity_strategy)
     var_counts = Dict{VarId, Int}()
-    for builder in con_builders
+    for builder in builders
         count_builder_occurrences!(var_counts, builder)
     end
+    return _materialize_parity_model(builders, _ordered_parity_vars(var_counts))
+end
 
-    pos_to_var_id = collect(keys(var_counts))
-    sort!(pos_to_var_id; by = vid -> (-var_counts[vid], vid))
-    var_id_to_pos = Dict(vid => pos for (pos, vid) in enumerate(pos_to_var_id))
+# Retained implications can link rows through a variable absent from all current
+# builders. Give those variables temporary union-find nodes, but no matrix columns.
+function _join_retained_parity_relations!(sets, first_row, manager::PropagationManager)
+    function join_vars(a, b)
+        a == b && return
+        row_a = get!(() -> push!(sets), first_row, a)
+        row_b = get!(() -> push!(sets), first_row, b)
+        union!(sets, row_a, row_b)
+    end
 
-    nparity_vars = length(pos_to_var_id)
-    cons = [
-        build(builder, nparity_vars, var_id_to_pos) for builder in con_builders
-    ]
+    for (pos, parent) in pairs(manager.parent_pos)
+        pos == parent && continue
+        join_vars(manager.pos_to_lit[pos].vid, manager.pos_to_lit[parent].vid)
+    end
+    for edge in edges(manager.graph)
+        src_rep = manager.scc_pos_to_rep_pos[src(edge)]
+        dst_rep = manager.scc_pos_to_rep_pos[dst(edge)]
+        join_vars(manager.pos_to_lit[src_rep].vid, manager.pos_to_lit[dst_rep].vid)
+    end
+end
 
-    return ParityModel(var_id_to_pos, pos_to_var_id, cons)
+"""
+    _build_parity_blocks!(builders, manager)
+
+Partition sparse rows by shared variables and retained propagation relations, then
+materialize each component in local coordinates. Register active variables in
+global occurrence order to preserve the manager's choice of literal representatives.
+Return `nothing` if a constant row is contradictory.
+"""
+function _build_parity_blocks!(builders, manager::PropagationManager)
+    sets = IntDisjointSets(length(builders))
+    first_row = Dict{VarId, Int}()
+    counts = Dict{VarId, Int}()
+    active_rows = Int[]
+    for (row, builder) in pairs(builders)
+        nonempty = false
+        for vid in _builder_variables(builder)
+            nonempty = true
+            counts[vid] = get(counts, vid, 0) + 1
+            previous = get!(first_row, vid, row)
+            previous == row || union!(sets, previous, row)
+        end
+        if nonempty
+            push!(active_rows, row)
+        elseif builder.rhs
+            return nothing
+        end
+    end
+
+    isempty(active_rows) && return ParityBlocks(ParityModel[])
+    _join_retained_parity_relations!(sets, first_row, manager)
+    roots = [find_root!(sets, row) for row in active_rows]
+    distinct_roots = unique(roots)
+    block_index = Dict(root => i for (i, root) in enumerate(distinct_roots))
+    row_groups = [XorConstraintBuilder[] for _ in distinct_roots]
+    var_groups = [VarId[] for _ in distinct_roots]
+    for (row, root) in zip(active_rows, roots)
+        push!(row_groups[block_index[root]], builders[row])
+    end
+    var_ids = _ordered_parity_vars(counts)
+    ensure_literals!(manager, var_ids)
+    for vid in var_ids
+        root = find_root!(sets, first_row[vid])
+        push!(var_groups[block_index[root]], vid)
+    end
+    return ParityBlocks(map(_materialize_parity_model, row_groups, var_groups))
+end
+
+function _reduce_parity_blocks!(blocks::ParityBlocks, manager::PropagationManager, strategy)
+    propagate!(blocks, manager; parity_strategy = strategy)
+    while !any(model -> model.infeasible, blocks.models) && any(has_unpivoted_con, blocks.models)
+        pure_xor = any(has_unpivoted_xor_con, blocks.models)
+        for model in blocks.models
+            if pure_xor
+                gauss_jordan_xor!(model)
+            else
+                gauss_jordan_xor_and!(model)
+            end
+            model.infeasible && return false
+        end
+
+        propagate!(blocks, manager; parity_strategy = strategy)
+        if pure_xor
+            for model in blocks.models
+                model.infeasible && return false
+                substitute_pivots_in_conjunctive_terms!(model)
+                substitute_parity_pivots!(model)
+                cleanup!(model)
+            end
+        end
+    end
+    return !any(model -> model.infeasible, blocks.models)
 end
 
 """
@@ -283,10 +378,10 @@ end
 
 Execute one parity presolve phase on a quadratic model.
 
-    Normalize `model` without aggregating parallel constraints, build and
-    propagate its parity system, eliminate parity rows, apply any parity-based
-    variable fixes or pattern rewrites discovered during the phase, and normalize
-    again without aggregation.
+Normalize `model` without aggregating parallel constraints and build a parity
+model for each independent set of rows. Eliminate rows within each block and
+propagate deductions through the shared manager. Apply variable fixes and
+pattern rewrites to the QP, then normalize again without aggregation.
 
 # Arguments
 - `model`: Quadratic model mutated in place.
@@ -310,7 +405,7 @@ Execute one parity presolve phase on a quadratic model.
 
 # See also
 - [`parity_presolve!`](@ref)
-- [`build_parity_model`](@ref)
+- [`_build_parity_blocks!`](@ref)
 """
 function parity_presolve_phase!(
     model::QPModel,
@@ -331,48 +426,15 @@ function parity_presolve_phase!(
         return normalization_changed
     end
 
-    parity_model = build_parity_model(model; parity_strategy = parity_strategy)
-    if isempty(parity_model.pos_to_var_id) || isempty(parity_model.cons)
-        # A row with no parity variables can still assert 0 = 1.
-        cleanup!(parity_model)
-        model.infeasible = parity_model.infeasible
-        finalize_phase!(propagator)
-        return normalization_changed
-    end
-
-    ensure_literals!(propagator, parity_model.pos_to_var_id)
-    propagate!(parity_model, propagator; parity_strategy = parity_strategy)
-    if parity_model.infeasible
+    builders = _parity_builders(model, parity_strategy)
+    blocks = _build_parity_blocks!(builders, propagator)
+    if isnothing(blocks) || !_reduce_parity_blocks!(blocks, propagator, parity_strategy)
         model.infeasible = true
         return normalization_changed
     end
-
-    while has_unpivoted_con(parity_model)
-        if has_unpivoted_xor_con(parity_model)
-            gauss_jordan_xor!(parity_model)
-            if parity_model.infeasible
-                model.infeasible = true
-                return normalization_changed
-            end
-            propagate!(parity_model, propagator; parity_strategy = parity_strategy)
-            if parity_model.infeasible
-                model.infeasible = true
-                return normalization_changed
-            end
-            substitute_pivots_in_conjunctive_terms!(parity_model)
-            substitute_parity_pivots!(parity_model)
-        else
-            gauss_jordan_xor_and!(parity_model)
-            if parity_model.infeasible
-                model.infeasible = true
-                return normalization_changed
-            end
-            propagate!(parity_model, propagator; parity_strategy = parity_strategy)
-            if parity_model.infeasible
-                model.infeasible = true
-                return normalization_changed
-            end
-        end
+    if isempty(blocks.models)
+        finalize_phase!(propagator)
+        return normalization_changed
     end
 
     parities_fixed = fix_parities!(model, propagator, postsolver)

@@ -73,6 +73,92 @@ function parity_prepare_manager(lit1::PC.VarLit, lit2::PC.VarLit)
     return manager
 end
 
+function parity_builder(linear = (), conjunctions = (); rhs = false)
+    builder = PC.XorConstraintBuilder()
+    for vid in linear
+        PC.add_par!(builder, vid)
+    end
+    for (a, b) in conjunctions
+        PC.add_conj!(builder, a, b)
+    end
+    rhs && PC.negate!(builder)
+    return builder
+end
+
+@testset "parity blocks use active row support before dense allocation" begin
+    # The low and high bits of x₁² + 2x₂x₃ = 1 have disjoint support.
+    con = PC.Constraint(parity_next_con_id(),
+        PC.QuadExpr(ParityQuadTerm[(1.0, 1, 1), (2.0, 2, 3)], ParityLinTerm[]), 1.0, 1.0)
+    vars = Dict(i => PC.IntVar(0.0, 5.0) for i in 1:3)
+    model = PC.QPModel(vars, [con], parity_empty_objective(), :min)
+    builders = PC._parity_builders(model, :full)
+    PC.add_conj!(builders[2], 8, 9)
+    PC.add_conj!(builders[2], 9, 8)
+    push!(builders, parity_builder([2, 4, 9, 9], [(1, 8), (8, 1)]), parity_builder())
+    manager = PC.PropagationManager(Int[])
+    blocks = PC._build_parity_blocks!(builders, manager)
+    @test [b.pos_to_var_id for b in blocks.models] == [[1], [2, 3, 4]]
+    first_row = only(blocks.models[1].cons)
+    @test first_row.par == [true] && first_row.rhs && first_row.conj === nothing
+    product, linear = blocks.models[2].cons
+    @test product.conj == parity_edge_matrix(3, [(1, 2)])
+    @test linear.par == [true, false, true] && linear.conj === nothing
+    @test [lit.vid for lit in manager.pos_to_lit if !lit.neg] == [2, 1, 3, 4]
+    @test isempty(PC._build_parity_blocks!([parity_builder()], manager).models)
+    push!(builders, parity_builder([10, 10]; rhs = true))
+    @test isnothing(PC._build_parity_blocks!(builders, manager))
+end
+
+@testset "shared propagation routes substitutions and fixings to each parity block" begin
+    builders = [parity_builder([11, 12]; rhs = true), parity_builder([1, 2]),
+        parity_builder([11, 12, 13]), parity_builder([1, 2, 3])]
+    manager = PC.PropagationManager(Int[])
+    blocks = PC._build_parity_blocks!(builders, manager)
+    @test length(blocks.models) == 2
+    @test PC._reduce_parity_blocks!(blocks, manager, :mod2_basic)
+    @test PC.fixed_value(manager, 13) === true
+    @test PC.fixed_value(manager, 3) === false
+    @test all(b -> isempty(b.cons), blocks.models)
+end
+
+@testset "retained equivalences and implications connect rows through absent variables" begin
+    # Phase one learns p₂ = p₁ and the chain p₁ ⇒ ¬p₃ ⇒ p₄.
+    first_rows = [parity_builder([1, 2]), parity_builder((), [(1, 3)]),
+        parity_builder([3, 4], [(3, 4)]; rhs = true)]
+    manager = PC.PropagationManager(collect(1:7))
+    @test PC._reduce_parity_blocks!(PC._build_parity_blocks!(first_rows, manager), manager, :full)
+    PC.finalize_phase!(manager)
+
+    # Neither 1 nor 3 occurs in phase two. Fixing 2 still forces 4, and the
+    # three-term row then implies that 5 and 6 have opposite parity.
+    next_rows = [parity_builder([2]; rhs = true), parity_builder([7]), parity_builder([4, 5, 6])]
+    fresh = PC._build_parity_blocks!(next_rows, PC.PropagationManager(Int[]))
+    @test length(fresh.models) == 3
+    blocks = PC._build_parity_blocks!(next_rows, manager)
+    @test [b.pos_to_var_id for b in blocks.models] == [[2, 4, 5, 6], [7]]
+    @test PC._reduce_parity_blocks!(blocks, manager, :full)
+    @test PC.fixed_value(manager, 4) === true
+    @test PC.fixed_value(manager, 7) === false
+    @test PC.repr!(manager, manager.lit_to_pos[PC.VarLit(5, false)]) ==
+        PC.repr!(manager, manager.lit_to_pos[PC.VarLit(6, true)])
+    @test isempty(manager.pending_fixings) && isempty(manager.pending_substitutions)
+end
+
+@testset "presolve reconstructs independent parity blocks with a shared objective" begin
+    for strategy in (:mod2_basic, :mod4_basic, :full)
+        vars = Dict(i => PC.IntVar(0.0, 4.0) for i in 1:2)
+        cons = [PC.Constraint(parity_next_con_id(),
+            PC.QuadExpr(ParityQuadTerm[(1.0, i, i)], ParityLinTerm[]), rhs, rhs)
+            for (i, rhs) in enumerate((4.0, 9.0))]
+        objective = PC.QuadExpr(ParityQuadTerm[(1.0, 1, 2)], ParityLinTerm[])
+        model = PC.QPModel(vars, cons, objective, :min)
+        result = PC.presolve!(model; enable_residue = false, parity_strategy = strategy)
+        @test !model.infeasible && isempty(model.vars)
+        @test model.obj_expr.constant == 6.0
+        @test PC.postsolve(result.postsolver, Dict{Int, Float64}()) == Dict(1 => 2.0, 2 => 3.0)
+    end
+end
+
 @testset "count_builder_occurrences! ignores toggled-off builder entries" begin
     counts = Dict{PC.VarId, Int}()
     builder = PC.XorConstraintBuilder()

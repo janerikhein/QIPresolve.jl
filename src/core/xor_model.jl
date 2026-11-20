@@ -50,6 +50,17 @@ function ParityModel(
     return ParityModel(var_to_pos, pos_to_var, cons, pivots, false)
 end
 
+"""Parity models with disjoint column sets and a lookup for propagation events."""
+struct ParityBlocks
+    models::Vector{ParityModel}
+    owner::Dict{VarId, Int}
+end
+
+function ParityBlocks(models::Vector{ParityModel})
+    owner = Dict(vid => i for (i, model) in pairs(models) for vid in model.pos_to_var_id)
+    return ParityBlocks(models, owner)
+end
+
 """
     cleanup!(model)
 
@@ -476,6 +487,27 @@ function substitute_var!(model::ParityModel, vid::VarId, substid::VarId, neg::Bo
     return _substitute_var_rows!(changed, model, vid, substid, neg)
 end
 
+function _register_parity_rows!(model::ParityModel, manager::PropagationManager, parity_strategy)
+    use_full_propagation = _parity_uses_full_propagation(parity_strategy)
+    i = 1
+    while i <= length(model.cons)
+        con = ensure_updated!(model.cons[i])
+        if con.meta.requires_prop && use_full_propagation && !con.meta.is_pure_xor && constraint_nnz(con) > 1
+            action = _tripartite_action(con)
+            if action isa _TripartiteImplicationAction
+                _add_tripartite_implications!(manager, model.pos_to_var_id, action)
+                con.meta.requires_prop = false
+            elseif action isa _TripartiteRewriteAction
+                _insert_tripartite_rewrite!(model, manager, i, action)
+                continue  # Process the replacement at this same index.
+            end
+        end
+        con.meta.requires_prop && register_implications!(manager, con, model.pos_to_var_id; parity_strategy)
+        i += 1
+    end
+    return model
+end
+
 """
     propagate!(model, manager)
 
@@ -501,89 +533,54 @@ function propagate!(
     manager::PropagationManager;
     parity_strategy = DEFAULT_PRESOLVE_PARITY_STRATEGY,
 )
-    parity_strategy = _normalize_parity_strategy(parity_strategy)
-    use_full_propagation = _parity_uses_full_propagation(parity_strategy)
+    propagate!(ParityBlocks([model]), manager; parity_strategy)
+    return model
+end
 
-    while _has_constraints_requiring_propagation(model) && !model.infeasible
+"""Register row deductions across all blocks before draining the shared manager's queues."""
+function propagate!(
+    blocks::ParityBlocks,
+    manager::PropagationManager;
+    parity_strategy = DEFAULT_PRESOLVE_PARITY_STRATEGY,
+)
+    parity_strategy = _normalize_parity_strategy(parity_strategy)
+    models = blocks.models
+    while !any(model -> model.infeasible, models) &&
+            (any(_has_constraints_requiring_propagation, models) ||
+             !isempty(manager.pending_fixings) || !isempty(manager.pending_substitutions))
         empty!(manager.seen_fixings)
         empty!(manager.seen_substitutions)
-
-        i = 1
-        while i <= length(model.cons)
-            con = ensure_updated!(model.cons[i])
-            if !con.meta.requires_prop
-                i += 1
-                continue
-            end
-
-            if con.meta.is_pure_xor || (con.meta.nnz_par == 0 && con.meta.nnz_conj == 1)
-                register_implications!(
-                    manager,
-                    con,
-                    model.pos_to_var_id;
-                    parity_strategy = parity_strategy,
-                )
-                i += 1
-                continue
-            end
-
-            if use_full_propagation
-                tripartite_action = _tripartite_action(con)
-                if tripartite_action isa _TripartiteImplicationAction
-                    _add_tripartite_implications!(
-                        manager,
-                        model.pos_to_var_id,
-                        tripartite_action,
-                    )
-                    con.meta.requires_prop = false
-                    i += 1
-                    continue
-                elseif tripartite_action isa _TripartiteRewriteAction
-                    _insert_tripartite_rewrite!(
-                        model,
-                        manager,
-                        i,
-                        tripartite_action,
-                    )
-                    continue
-                end
-            end
-
-            register_implications!(
-                manager,
-                con,
-                model.pos_to_var_id;
-                parity_strategy = parity_strategy,
-            )
-            i += 1
+        for model in models
+            _register_parity_rows!(model, manager, parity_strategy)
         end
 
         update!(manager)
-        changed = falses(length(model.cons))
+        changed = [falses(length(model.cons)) for model in models]
 
         while true
             fixing = pop_fixing!(manager)
             fixing === nothing && break
             vid, val = fixing
-            _fix_var_rows!(changed, model, vid, val)
+            block = get(blocks.owner, vid, 0)
+            block == 0 || _fix_var_rows!(changed[block], models[block], vid, val)
         end
-        
+
         while true
             substitution = pop_substitution!(manager)
             substitution === nothing && break
             vid, substid, neg = substitution
-            _substitute_var_rows!(changed, model, vid, substid, neg)
+            block = get(blocks.owner, vid, 0)
+            block == 0 || _substitute_var_rows!(changed[block], models[block], vid, substid, neg)
         end
 
-        for i in eachindex(model.cons)
-            changed[i] || continue
-            _revalidate_pivot!(model, i)
+        for (model, changed_rows) in zip(models, changed)
+            for i in eachindex(changed_rows)
+                changed_rows[i] && _revalidate_pivot!(model, i)
+            end
+            cleanup!(model)
         end
-
-        cleanup!(model)
     end
-
-    return model
+    return blocks
 end
 
 """
