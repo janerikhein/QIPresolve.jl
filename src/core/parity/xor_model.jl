@@ -62,18 +62,13 @@ Remove empty rows from `model` and detect empty contradictory rows.
 - Deletes zero rows, deletes their pivot slots, and may set
   `model.infeasible = true`.
 """
-function cleanup!(
-    model::ParityModel,
-    stats_accumulator::Union{Nothing, _ParityStatsAccumulator} = nothing,
-    infeasibility_source::Symbol = :elimination,
-)
+function cleanup!(model::ParityModel)
     for i in length(model.cons):-1:1
         con = ensure_updated!(model.cons[i])
         constraint_nnz(con) == 0 || continue
 
         if con.rhs
             model.infeasible = true
-            _record_infeasibility!(stats_accumulator, infeasibility_source)
         end
         deleteat!(model.cons, i)
         deleteat!(model.pivots, i)
@@ -167,7 +162,6 @@ function eliminate_pivot_from_rows!(
     piv_col_idx2::Union{Int, Nothing},
     include_xor::Bool,
     include_xor_and::Bool,
-    stats_accumulator::Union{Nothing, _ParityStatsAccumulator} = nothing,
 )
     piv_con = ensure_updated!(model.cons[piv_row_idx])
 
@@ -185,7 +179,6 @@ function eliminate_pivot_from_rows!(
         ensure_updated!(con)
         if constraint_nnz(con) == 0 && con.rhs
             model.infeasible = true
-            _record_infeasibility!(stats_accumulator, :elimination)
         end
     end
 
@@ -200,10 +193,7 @@ Eliminate stored pure-parity pivots from parity terms in other rows.
 # Returns
 - The mutated `model`.
 """
-function substitute_parity_pivots!(
-    model::ParityModel,
-    stats_accumulator::Union{Nothing, _ParityStatsAccumulator} = nothing,
-)
+function substitute_parity_pivots!(model::ParityModel)
     for (piv_row_idx, pivot) in enumerate(model.pivots)
         model.infeasible && break
         pivot === nothing && continue
@@ -234,7 +224,6 @@ function substitute_parity_pivots!(
                 _revalidate_pivot!(model, row_idx)
                 if constraint_nnz(con) == 0 && con.rhs
                     model.infeasible = true
-                    _record_infeasibility!(stats_accumulator, :elimination)
                 end
             else
                 xor_con!(con, piv_con)
@@ -398,7 +387,6 @@ function _add_tripartite_implications!(
     manager::PropagationManager,
     idx_to_vid::Vector{VarId},
     action::_TripartiteImplicationAction,
-    stats_accumulator::Union{Nothing, _ParityStatsAccumulator} = nothing,
 )
     x_vid = idx_to_vid[action.x_idx]
     y_vid = idx_to_vid[action.y_idx]
@@ -407,13 +395,11 @@ function _add_tripartite_implications!(
         manager,
         _assignment_lit(x_vid, !action.r1),
         _assignment_lit(y_vid, action.r2),
-        stats_accumulator,
     )
     add_implication!(
         manager,
         _assignment_lit(y_vid, !action.r2),
         _assignment_lit(x_vid, action.r1),
-        stats_accumulator,
     )
 
     return manager
@@ -436,9 +422,7 @@ function _insert_tripartite_rewrite!(
     manager::PropagationManager,
     row_idx::Int,
     action::_TripartiteRewriteAction,
-    stats_accumulator::Union{Nothing, _ParityStatsAccumulator} = nothing,
 )
-    _record_constraint_split!(stats_accumulator)
     deleteat!(model.cons, row_idx)
     deleteat!(model.pivots, row_idx)
 
@@ -449,11 +433,10 @@ function _insert_tripartite_rewrite!(
     )
         nnz = count(support)
         @assert nnz > 0
-        _record_generated_xor_constraint!(stats_accumulator, support, model.pos_to_var_id)
 
         if nnz == 1
             vid = model.pos_to_var_id[findfirst(support)]
-            fix_var!(manager, vid, rhs, stats_accumulator, :elimination)
+            fix_var!(manager, vid, rhs)
         else
             push!(new_cons, XorConstraint(copy(support), rhs))
         end
@@ -515,9 +498,7 @@ requires propagation or `model` becomes infeasible.
 """
 function propagate!(
     model::ParityModel,
-    manager::PropagationManager,
-    stats_accumulator::Union{Nothing, _ParityStatsAccumulator} = nothing,
-    ;
+    manager::PropagationManager;
     parity_strategy = DEFAULT_PRESOLVE_PARITY_STRATEGY,
 )
     parity_strategy = _normalize_parity_strategy(parity_strategy)
@@ -539,8 +520,7 @@ function propagate!(
                 register_implications!(
                     manager,
                     con,
-                    model.pos_to_var_id,
-                    stats_accumulator;
+                    model.pos_to_var_id;
                     parity_strategy = parity_strategy,
                 )
                 i += 1
@@ -554,7 +534,6 @@ function propagate!(
                         manager,
                         model.pos_to_var_id,
                         tripartite_action,
-                        stats_accumulator,
                     )
                     con.meta.requires_prop = false
                     i += 1
@@ -565,7 +544,6 @@ function propagate!(
                         manager,
                         i,
                         tripartite_action,
-                        stats_accumulator,
                     )
                     continue
                 end
@@ -574,14 +552,13 @@ function propagate!(
             register_implications!(
                 manager,
                 con,
-                model.pos_to_var_id,
-                stats_accumulator;
+                model.pos_to_var_id;
                 parity_strategy = parity_strategy,
             )
             i += 1
         end
 
-        update!(manager, stats_accumulator)
+        update!(manager)
         changed = falses(length(model.cons))
 
         while true
@@ -603,7 +580,7 @@ function propagate!(
             _revalidate_pivot!(model, i)
         end
 
-        cleanup!(model, stats_accumulator, :propagation)
+        cleanup!(model)
     end
 
     return model
@@ -679,7 +656,6 @@ function gauss_jordan!(
     pivot_xor_and::Bool,
     eliminate_xor::Bool,
     eliminate_xor_and::Bool,
-    stats_accumulator::Union{Nothing, _ParityStatsAccumulator} = nothing,
 )
     while !model.infeasible
         piv_row_idx = get_pivot_row_idx(model, pivot_xor, pivot_xor_and)
@@ -696,7 +672,6 @@ function gauss_jordan!(
             piv_col_idx2,
             eliminate_xor,
             eliminate_xor_and,
-            stats_accumulator,
         )
     end
 
@@ -708,17 +683,11 @@ end
 
 Run Gauss-Jordan elimination using only pure-XOR pivots and targets.
 """
-gauss_jordan_xor!(
-    model::ParityModel,
-    stats_accumulator::Union{Nothing, _ParityStatsAccumulator} = nothing,
-) = gauss_jordan!(model, true, false, true, false, stats_accumulator)
+gauss_jordan_xor!(model::ParityModel) = gauss_jordan!(model, true, false, true, false)
 
 """
     gauss_jordan_xor_and!(model)
 
 Run Gauss-Jordan elimination using only XOR-AND pivots and targets.
 """
-gauss_jordan_xor_and!(
-    model::ParityModel,
-    stats_accumulator::Union{Nothing, _ParityStatsAccumulator} = nothing,
-) = gauss_jordan!(model, false, true, false, true, stats_accumulator)
+gauss_jordan_xor_and!(model::ParityModel) = gauss_jordan!(model, false, true, false, true)

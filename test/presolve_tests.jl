@@ -16,18 +16,11 @@ const PRESOLVE_NEXT_CON_ID = Ref(0)
     end
     for parity in (false, true), residue in (false, true)
         result = QIPresolve.presolve!(switch_model(); enable_parity = parity,
-            enable_residue = residue, collect_stats = true)
+            enable_residue = residue)
         @test !result.model.infeasible
         @test length(result.model.vars) == (parity ? 0 : 2)
         if parity
             @test QIPresolve.postsolve(result.postsolver, Dict{Int,Float64}()) == Dict(1 => 1.0, 2 => 0.0)
-        else
-            @test all(getfield(result.parity_stats, f) == getfield(PC.ParityStats(), f)
-                for f in fieldnames(PC.ParityStats))
-        end
-        if !residue
-            @test all(getfield(result.residue_stats, f) == getfield(PC.ResidueStats(), f)
-                for f in fieldnames(PC.ResidueStats))
         end
     end
     @test !QIPresolve.presolve!(switch_model(); enable_parity = false, enable_residue = false,
@@ -143,6 +136,7 @@ end
     )
 
     @test result isa QIPresolve.PresolveResult
+    @test propertynames(result) == (:model, :postsolver)
     @test result.model === model
     @test isempty(model.vars)
     @test QIPresolve.postsolve(result.postsolver, Dict{PC.VarId, Float64}()) ==
@@ -224,11 +218,9 @@ end
         con = PC.Constraint(presolve_next_con_id(), expr, rhs, rhs)
         model = PC.QPModel(copy(vars), [con], presolve_empty_objective(), :min)
 
-        result = QIPresolve.presolve!(model; collect_stats = true)
+        result = QIPresolve.presolve!(model)
 
         @test result.model.infeasible == infeasible
-        @test result.residue_stats.infeasibility_detected == infeasible
-        @test result.residue_stats.num_constraints_processed == 1
         @test result.model.vars == vars
     end
 end
@@ -255,6 +247,28 @@ end
         Dict{PC.VarId, Float64}(1 => 1.0)
 end
 
+@testset "presolve! shares the parity phase limit across residue passes" begin
+    for budget in 0:2
+        vars = Dict(i => PC.IntVar(0.0, 1.0) for i in 1:2)
+        expr = PC.QuadExpr(PresolveQuadTerm[(2.0, 1, 2)], PresolveLinTerm[])
+        con = PC.Constraint(presolve_next_con_id(), expr, 1.0, 2.0)
+        model = PC.QPModel(vars, [con], presolve_empty_objective(), :min)
+
+        result = QIPresolve.presolve!(model; max_parity_phases = budget,
+            residue_strategy = :powers_of_two, residue_threshold = 2)
+
+        @test !model.infeasible
+        if budget < 2
+            # Residue creates the equality even when parity has exhausted its budget.
+            @test only(model.cons).lhs == only(model.cons).rhs == 2.0
+            @test length(model.vars) == 2
+        else
+            @test isempty(model.vars)
+            @test QIPresolve.postsolve(result.postsolver, Dict{Int, Float64}()) == Dict(1 => 1.0, 2 => 1.0)
+        end
+    end
+end
+
 @testset "residue_presolve_constraint! reports non-equality tightening" begin
     vars = Dict{PC.VarId, PC.IntVar}(1 => PC.IntVar(1.0, 4.0))
     con = PC.Constraint(
@@ -265,12 +279,11 @@ end
     )
     model = PC.QPModel(vars, [con], presolve_empty_objective(), :min)
 
-    stats = PC.residue_presolve_constraint!(model, con, [2])
+    result = PC.residue_presolve_constraint!(model, con, [2])
 
-    @test stats.changed
-    @test !stats.tightened_to_equality
-    @test stats.processed
-    @test !stats.infeasible
+    @test result.changed
+    @test !result.tightened_to_equality
+    @test !result.infeasible
     @test con.lhs == 2.0
     @test con.rhs == 8.0
 end
@@ -296,16 +309,14 @@ end
     )
     model = PC.QPModel(vars, [con1, con2], presolve_empty_objective(), :min)
 
-    stats = PC._residue_presolve_pass!(
+    result = PC._residue_presolve_pass!(
         model,
         [2],
         Set([con1.id]);
         treewidth_threshold = 2,
     )
 
-    @test stats.changed
-    @test stats.processed == 1
-    @test stats.processed_constraint_ids == [con1.id]
+    @test result.changed
     @test con1.lhs == 2.0
     @test con1.rhs == 8.0
     @test con2.lhs == 1.0
@@ -327,14 +338,13 @@ end
     propagator = PC.PropagationManager(PC.VarId[])
     postsolver = PC.ParityPostsolver(keys(vars))
 
-    stats = PC.parity_presolve!(model, propagator, postsolver)
+    result = PC.parity_presolve!(model, propagator, postsolver)
     new_con_ids = setdiff(Set(con.id for con in model.cons), Set([con.id]))
 
-    @test stats.changed
-    @test stats.domains_changed
-    @test stats.pattern_rewritten_vars == 2
+    @test result.changed
+    @test result.domains_changed
     @test !isempty(new_con_ids)
-    @test all(con_id in stats.coefficient_changed_constraint_ids for con_id in new_con_ids)
+    @test all(con_id in result.coefficient_changed_constraint_ids for con_id in new_con_ids)
 end
 
 @testset "presolve! handles stale parity events from script random model" begin

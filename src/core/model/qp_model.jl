@@ -134,7 +134,7 @@ Rewrite variables with fixed parity as `x_var_id := 2 * x_var_id + offset`,
 where `offset` is `0` for even and `1` for odd.
 
 # Returns
-- The number of transformed variables.
+- Whether any variable was transformed.
 
 # Side Effects
 - Mutates `model`.
@@ -187,9 +187,8 @@ function fix_parities!(
     model::QPModel,
     propagator::PropagationManager,
     postsolver::Union{Nothing, ParityPostsolver},
-    stats_accumulator::Union{Nothing, _ParityStatsAccumulator} = nothing,
 )
-    nfixed = 0
+    changed = false
 
     for lit in propagator.pos_to_lit
         lit.neg && continue
@@ -211,11 +210,10 @@ function fix_parities!(
         postsolver !== nothing && append_fixed_bit!(postsolver, lit.vid, val)
         affine_transform!(model, lit.vid, 2.0, offset)
         set_var_bounds!(model, lit.vid, new_lb, new_ub)
-        _record_fixed_parity_substitution!(stats_accumulator)
-        nfixed += 1
+        changed = true
     end
 
-    return nfixed
+    return changed
 end
 
 
@@ -258,7 +256,7 @@ binary helper variable, rewrite member variables as affine functions of that
 helper, add linking constraints, and update the propagator SCC structure.
 
 # Returns
-- The number of rewritten variables.
+- Whether any variable was rewritten.
 
 # Side Effects
 - Mutates `model` and `propagator`.
@@ -268,7 +266,6 @@ function fix_parity_patterns!(
     model::QPModel,
     propagator::ParityPropagator,
     postsolver::Union{Nothing, ParityPostsolver},
-    stats_accumulator::Union{Nothing, _ParityStatsAccumulator} = nothing,
 )
     candidate_vids = VarId[]
 
@@ -287,7 +284,7 @@ function fix_parity_patterns!(
         push!(candidate_vids, rep_lit.vid)
     end
 
-    nrewritten = 0
+    changed = false
 
     for scc_vid in candidate_vids
         haskey(propagator.lit_to_pos, VarLit(scc_vid, false)) || continue
@@ -351,12 +348,11 @@ function fix_parity_patterns!(
                 add_constraint!(model, lin_expr([(1.0, lit.vid), (u0 - u1, b_scc)]), -Inf, u0)
             end
             set_var_bounds!(model, lit.vid, new_lb, new_ub)
-            nrewritten += 1
         end
 
-        _record_pattern_substitution!(stats_accumulator, length(component_lits), length(component_lits))
         substitute_scc_by_new_var!(propagator, scc_vid, b_scc)
+        changed = true
     end
 
-    return nrewritten
+    return changed
 end

@@ -463,8 +463,7 @@ function run_instance(
     PC.parity_presolve!(
         model,
         propagator,
-        postsolver,
-        nothing;
+        postsolver;
         parity_strategy = parity_strategy,
     )
     presolve_time = time() - start_time

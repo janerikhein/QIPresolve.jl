@@ -209,14 +209,11 @@ function enqueue_fixing!(
     manager::PropagationManager,
     vid::VarId,
     val::Bool,
-    stats_accumulator::Union{Nothing, _ParityStatsAccumulator} = nothing,
-    source::Symbol = :unknown,
 )
     key = (vid, val)
     get(manager.seen_fixings, key, false) && return false
     manager.seen_fixings[key] = true
     push!(manager.pending_fixings, key)
-    _record_parity_fixing!(stats_accumulator, source)
     return true
 end
 
@@ -249,8 +246,6 @@ the labels are reversed, the variable is fixed to `false`.
 function maybe_enqueue_fixing!(
     manager::PropagationManager,
     scc_pos::Int,
-    stats_accumulator::Union{Nothing, _ParityStatsAccumulator} = nothing,
-    source::Symbol = :unknown,
 )
     lit = manager.pos_to_lit[manager.scc_pos_to_rep_pos[scc_pos]]
     pos_rep = repr!(manager, manager.lit_to_pos[VarLit(lit.vid, false)])
@@ -261,9 +256,9 @@ function maybe_enqueue_fixing!(
     neg_label = manager.lit_labels[neg_scc]
 
     if pos_label == TRUE && neg_label == FALSE
-        enqueue_fixing!(manager, lit.vid, true, stats_accumulator, source)
+        enqueue_fixing!(manager, lit.vid, true)
     elseif pos_label == FALSE && neg_label == TRUE
-        enqueue_fixing!(manager, lit.vid, false, stats_accumulator, source)
+        enqueue_fixing!(manager, lit.vid, false)
     end
 
     return nothing
@@ -282,13 +277,11 @@ function set_lit_label!(
     manager::PropagationManager,
     scc_pos::Int,
     label::LitLabel,
-    stats_accumulator::Union{Nothing, _ParityStatsAccumulator} = nothing,
-    source::Symbol = :unknown,
 )
     cur_label = manager.lit_labels[scc_pos]
     cur_label == label && return false
     manager.lit_labels[scc_pos] = label
-    maybe_enqueue_fixing!(manager, scc_pos, stats_accumulator, source)
+    maybe_enqueue_fixing!(manager, scc_pos)
     return true
 end
 
@@ -330,20 +323,14 @@ function add_edge!(
     manager::PropagationManager,
     lit1::VarLit,
     lit2::VarLit,
-    stats_accumulator::Union{Nothing, _ParityStatsAccumulator} = nothing,
 )
     rep1 = repr!(manager, manager.lit_to_pos[lit1])
     rep2 = repr!(manager, manager.lit_to_pos[lit2])
-    added = false
-    
-    if rep1 != rep2
-        scc_pos1 = manager.rep_pos_to_scc_pos[rep1]
-        scc_pos2 = manager.rep_pos_to_scc_pos[rep2]
-        added = Graphs.add_edge!(manager.graph, scc_pos1, scc_pos2)
-    end
+    rep1 == rep2 && return false
 
-    _record_implication_edge!(stats_accumulator, added)
-    return added
+    scc_pos1 = manager.rep_pos_to_scc_pos[rep1]
+    scc_pos2 = manager.rep_pos_to_scc_pos[rep2]
+    return Graphs.add_edge!(manager.graph, scc_pos1, scc_pos2)
 end
 
 
@@ -359,10 +346,9 @@ function add_implication!(
     manager::PropagationManager,
     lit1::VarLit,
     lit2::VarLit,
-    stats_accumulator::Union{Nothing, _ParityStatsAccumulator} = nothing,
 )
-    add_edge!(manager, lit1, lit2, stats_accumulator)
-    add_edge!(manager, negated(lit2), negated(lit1), stats_accumulator)
+    add_edge!(manager, lit1, lit2)
+    add_edge!(manager, negated(lit2), negated(lit1))
 end
 
 
@@ -378,10 +364,9 @@ function add_equivalence!(
     manager::PropagationManager,
     lit1::VarLit,
     lit2::VarLit,
-    stats_accumulator::Union{Nothing, _ParityStatsAccumulator} = nothing,
 )
-    add_implication!(manager, lit1, lit2, stats_accumulator)
-    add_implication!(manager, lit2, lit1, stats_accumulator)
+    add_implication!(manager, lit1, lit2)
+    add_implication!(manager, lit2, lit1)
 end
 
 
@@ -399,23 +384,21 @@ function fix_var!(
     manager::PropagationManager,
     vid::VarId,
     val::Bool,
-    stats_accumulator::Union{Nothing, _ParityStatsAccumulator} = nothing,
-    source::Symbol = :elimination,
 )
     lit = VarLit(vid, !val)
-    add_edge!(manager, negated(lit), lit, stats_accumulator)
+    add_edge!(manager, negated(lit), lit)
     pos_rep = repr!(manager, manager.lit_to_pos[VarLit(vid, false)])
     neg_rep = repr!(manager, manager.lit_to_pos[VarLit(vid, true)])
     pos_scc = manager.rep_pos_to_scc_pos[pos_rep]
     neg_scc = manager.rep_pos_to_scc_pos[neg_rep]
     if val
-        set_lit_label!(manager, pos_scc, TRUE, stats_accumulator, source)
-        set_lit_label!(manager, neg_scc, FALSE, stats_accumulator, source)
+        set_lit_label!(manager, pos_scc, TRUE)
+        set_lit_label!(manager, neg_scc, FALSE)
     else
-        set_lit_label!(manager, pos_scc, FALSE, stats_accumulator, source)
-        set_lit_label!(manager, neg_scc, TRUE, stats_accumulator, source)
+        set_lit_label!(manager, pos_scc, FALSE)
+        set_lit_label!(manager, neg_scc, TRUE)
     end
-    enqueue_fixing!(manager, vid, val, stats_accumulator, source)
+    enqueue_fixing!(manager, vid, val)
 end
 
 
@@ -491,7 +474,6 @@ queued immediately.
 function propagate_labels!(
     manager::PropagationManager,
     top_order,
-    stats_accumulator::Union{Nothing, _ParityStatsAccumulator} = nothing,
 )
     graph = manager.graph
     lit_labels = manager.lit_labels
@@ -500,7 +482,7 @@ function propagate_labels!(
     @inbounds for v in top_order
         lit_labels[v] == TRUE || continue
         for w in outneighbors(graph, v)
-            lit_labels[w] == UNDEF && set_lit_label!(manager, w, TRUE, stats_accumulator, :propagation)
+            lit_labels[w] == UNDEF && set_lit_label!(manager, w, TRUE)
         end
     end
 
@@ -509,7 +491,7 @@ function propagate_labels!(
         w = top_order[i]
         lit_labels[w] == FALSE || continue
         for v in inneighbors(graph, w)
-            lit_labels[v] == UNDEF && set_lit_label!(manager, v, FALSE, stats_accumulator, :propagation)
+            lit_labels[v] == UNDEF && set_lit_label!(manager, v, FALSE)
         end
     end
 
@@ -530,7 +512,6 @@ queued.
 function label_reachables!(
     manager::PropagationManager,
     top_order,
-    stats_accumulator::Union{Nothing, _ParityStatsAccumulator} = nothing,
 )
     n = nv(manager.graph)
     reachables = [falses(n) for _ in 1:n]
@@ -554,8 +535,8 @@ function label_reachables!(
     @inbounds for v in top_order
         neg_v = neg_nodes[v]
         if reachables[neg_v][v]
-            set_lit_label!(manager, neg_v, FALSE, stats_accumulator, :path)
-            set_lit_label!(manager, v, TRUE, stats_accumulator, :path)
+            set_lit_label!(manager, neg_v, FALSE)
+            set_lit_label!(manager, v, TRUE)
         end
     end
 
@@ -786,14 +767,11 @@ This recomputes SCCs, builds a topological order of the condensed graph, labels
 forced literals via reachability, and then propagates those labels through the
 implication DAG.
 """
-function update!(
-    manager::PropagationManager,
-    stats_accumulator::Union{Nothing, _ParityStatsAccumulator} = nothing,
-)
+function update!(manager::PropagationManager)
     update_sccs!(manager)
     top_order = topological_sort(manager.graph)
-    label_reachables!(manager, top_order, stats_accumulator)
-    propagate_labels!(manager, top_order, stats_accumulator)
+    label_reachables!(manager, top_order)
+    propagate_labels!(manager, top_order)
     return manager
 end
 
@@ -855,14 +833,13 @@ function _add_deduplicated_implication!(
         antecedent::VarLit,
         consequent::VarLit,
         seen_implications::Set{Tuple{Tuple{VarId, Bool}, Tuple{VarId, Bool}}},
-        stats_accumulator::Union{Nothing, _ParityStatsAccumulator},
     )
     antecedent == consequent && return manager
 
     key = _canonical_implication_key(antecedent, consequent)
     key in seen_implications && return manager
     push!(seen_implications, key)
-    add_implication!(manager, antecedent, consequent, stats_accumulator)
+    add_implication!(manager, antecedent, consequent)
     return manager
 end
 
@@ -870,7 +847,6 @@ function _register_two_term_xor_and_implications!(
         manager::PropagationManager,
         con::XorConstraint,
         idx_to_vid,
-        stats_accumulator::Union{Nothing, _ParityStatsAccumulator} = nothing,
     )
     parity_indices = findall(con.par)
     conjunction_pairs = _active_conjunction_pairs(con.conj)
@@ -908,7 +884,6 @@ function _register_two_term_xor_and_implications!(
                     _lit_for_value(antecedent_vid, antecedent_value),
                     _lit_for_value(antecedent_vid, !antecedent_value),
                     seen_implications,
-                    stats_accumulator,
                 )
                 continue
             end
@@ -927,7 +902,6 @@ function _register_two_term_xor_and_implications!(
                     _lit_for_value(antecedent_vid, antecedent_value),
                     _lit_for_value(idx_to_vid[consequent_idx], consequent_value),
                     seen_implications,
-                    stats_accumulator,
                 )
             end
         end
@@ -1023,9 +997,7 @@ mark `con` as no longer requiring propagation afterward.
 function register_implications!(
     manager::PropagationManager,
     con::XorConstraint,
-    idx_to_vid,
-    stats_accumulator::Union{Nothing, _ParityStatsAccumulator} = nothing,
-    ;
+    idx_to_vid;
     parity_strategy = DEFAULT_PRESOLVE_PARITY_STRATEGY,
 )
     parity_strategy = _normalize_parity_strategy(parity_strategy)
@@ -1038,7 +1010,6 @@ function register_implications!(
         manager,
         con,
         idx_to_vid,
-        stats_accumulator,
     )
 
     # Case 1: Pure XOR
@@ -1047,7 +1018,7 @@ function register_implications!(
         # Case 1.1: singleton parity
         if con.meta.nnz_par == 1
             vid = idx_to_vid[findfirst(con.par)]
-            fix_var!(manager, vid, con.rhs, stats_accumulator, :elimination)
+            fix_var!(manager, vid, con.rhs)
         end
 
         # Case 1.2: two parity terms
@@ -1057,7 +1028,7 @@ function register_implications!(
             vid2 = idx_to_vid[findnext(con.par, vid1_idx + 1)]
             lit1 = VarLit(vid1, false)
             lit2 = VarLit(vid2, con.rhs)
-            add_equivalence!(manager, lit1, lit2, stats_accumulator)
+            add_equivalence!(manager, lit1, lit2)
         end
     end
 
@@ -1081,12 +1052,12 @@ function register_implications!(
             @assert vid1_idx != 0
             vid1, vid2 = idx_to_vid[vid1_idx], idx_to_vid[vid2_idx]
             if con.rhs 
-                fix_var!(manager, vid1, true, stats_accumulator, :elimination)
-                fix_var!(manager, vid2, true, stats_accumulator, :elimination)
+                fix_var!(manager, vid1, true)
+                fix_var!(manager, vid2, true)
             else
                 lit1 = VarLit(vid1, false)
                 lit2 = VarLit(vid2, true)
-                add_implication!(manager, lit1, lit2, stats_accumulator)
+                add_implication!(manager, lit1, lit2)
             end
         end
 
@@ -1118,7 +1089,6 @@ function register_implications!(
                     manager,
                     _lit_for_value(antecedent_vid, false),
                     _lit_for_value(consequent_vid, true),
-                    stats_accumulator,
                 )
             end
 
@@ -1127,7 +1097,6 @@ function register_implications!(
                     manager,
                     _lit_for_value(antecedent_vid, false),
                     _lit_for_value(consequent_vid, true),
-                    stats_accumulator,
                 )
             end
         end
@@ -1154,7 +1123,6 @@ function register_implications!(
                             manager,
                             _lit_for_value(antecedent_vid, antecedent_val),
                             _lit_for_value(consequent_vid, consequent_val),
-                            stats_accumulator,
                         )
                     end
                 end

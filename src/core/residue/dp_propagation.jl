@@ -831,33 +831,15 @@ function _residue_constraint_status(
     return :process
 end
 
-function _residue_constraint_result(
-        changed::Bool,
-        tightened_to_equality::Bool,
-        processed::Bool,
-        infeasible::Bool,
-        stats_accumulator::Union{Nothing, _ResidueStatsAccumulator},
-    )
-    return (
-        changed = changed,
-        tightened_to_equality = tightened_to_equality,
-        processed = processed,
-        infeasible = infeasible,
-        residue_stats = _residue_stats(stats_accumulator),
-    )
-end
-
 """
-    residue_presolve_constraint!(model, con, moduli; treewidth_threshold=typemax(Int), collect_stats=false)
-    residue_presolve_constraint!(model, con, moduli, stats_accumulator; treewidth_threshold=typemax(Int))
+    residue_presolve_constraint!(model, con, moduli; treewidth_threshold=typemax(Int))
 
 Run residue-based bound tightening on a single constraint of `model`.
 Variables with an unbounded integer domain range over one full period per modulus
 during residue evaluation. Their model bounds are preserved.
 
 # Returns
-- A named tuple with `changed`, `tightened_to_equality`, `processed`, and
-  `infeasible` fields, plus accumulated `residue_stats`.
+- A named tuple with `changed`, `tightened_to_equality`, and `infeasible` fields.
 
 # Side Effects
 - May tighten `con.lhs` or `con.rhs`.
@@ -868,86 +850,19 @@ function residue_presolve_constraint!(
         con::Constraint,
         moduli::AbstractVector{<:Integer};
         treewidth_threshold::Integer = typemax(Int),
-        collect_stats::Bool = false,
     )
-    stats_accumulator = collect_stats ? _ResidueStatsAccumulator() : nothing
-    return residue_presolve_constraint!(
-        model,
-        con,
-        moduli,
-        stats_accumulator;
-        treewidth_threshold = treewidth_threshold,
-    )
-end
-
-function residue_presolve_constraint!(
-        model::QPModel,
-        con::Constraint,
-        moduli::AbstractVector{<:Integer},
-        stats_accumulator::Union{Nothing, _ResidueStatsAccumulator};
-        treewidth_threshold::Integer = typemax(Int),
-    )
-    start_time = time()
-    try
-        return _residue_presolve_constraint_impl!(
-            model,
-            con,
-            moduli,
-            stats_accumulator;
-            treewidth_threshold = treewidth_threshold,
-        )
-    finally
-        _record_residue_presolve_time!(stats_accumulator, time() - start_time)
-    end
-end
-
-function _residue_presolve_constraint_impl!(
-        model::QPModel,
-        con::Constraint,
-        moduli::AbstractVector{<:Integer},
-        stats_accumulator::Union{Nothing, _ResidueStatsAccumulator};
-        treewidth_threshold::Integer,
-    )
-    model.infeasible && return _residue_constraint_result(
-        false,
-        false,
-        false,
-        true,
-        stats_accumulator,
-    )
-
-    was_inequality = !is_equality(con)
-    status = _residue_constraint_status(con, model.vars)
+    status = model.infeasible ? :infeasible : _residue_constraint_status(con, model.vars)
     if status == :infeasible
         model.infeasible = true
-        return _residue_constraint_result(
-            false,
-            false,
-            false,
-            true,
-            stats_accumulator,
-        )
-    elseif status == :skip
-        return _residue_constraint_result(
-            false,
-            false,
-            false,
-            false,
-            stats_accumulator,
-        )
+        return (changed = false, tightened_to_equality = false, infeasible = true)
+    elseif status == :skip || isempty(moduli)
+        return (changed = false, tightened_to_equality = false, infeasible = false)
     end
-    isempty(moduli) && return _residue_constraint_result(
-        false,
-        false,
-        false,
-        false,
-        stats_accumulator,
-    )
 
+    was_inequality = !is_equality(con)
     standardized = _standardize_residue_constraint(con, model.vars, model.obj_expr)
     cache = _ResidueCacheEntry[]
     changed = false
-    processed = false
 
     for modulus_value in moduli
         modulus = Int(modulus_value)
@@ -957,47 +872,20 @@ function _residue_presolve_constraint_impl!(
             standardized.var_bounds;
             treewidth_threshold = treewidth_threshold,
         )
-        _record_residue_modulus_evaluated!(stats_accumulator, con)
-        processed = true
         result.saturated && continue
 
         push!(cache, _ResidueCacheEntry(modulus, result.residues))
-        old_lhs = con.lhs
-        old_rhs = con.rhs
-        was_equality_before_reapply = is_equality(con)
-        reapply_changed = _reapply_residue_cache!(con, cache, standardized.constraint_shift)
-        bounds_changed = con.lhs != old_lhs || con.rhs != old_rhs
-        bounds_changed && _record_residue_bound_tightening!(
-            stats_accumulator,
-            con,
-            old_lhs,
-            old_rhs,
-            was_equality_before_reapply,
-        )
-        residue_infeasible = con.lhs > con.rhs
-        (bounds_changed || residue_infeasible) &&
-            _record_useful_residue_modulus!(stats_accumulator)
-        changed = reapply_changed || bounds_changed || changed
-
-        if residue_infeasible
+        changed |= _reapply_residue_cache!(con, cache, standardized.constraint_shift)
+        if con.lhs > con.rhs
             model.infeasible = true
-            _record_residue_infeasibility!(stats_accumulator)
-            return _residue_constraint_result(
-                changed,
-                false,
-                processed,
-                true,
-                stats_accumulator,
-            )
+            return (changed = changed, tightened_to_equality = false, infeasible = true)
         end
     end
 
-    return _residue_constraint_result(
-        changed,
-        changed && was_inequality && is_equality(con),
-        processed,
-        false,
-        stats_accumulator,
+    return (
+        changed = changed,
+        tightened_to_equality = changed && was_inequality && is_equality(con),
+        infeasible = false,
     )
 end
 

@@ -256,7 +256,7 @@ end
     even_manager = PC.PropagationManager([1])
     PC.fix_var!(even_manager, 1, false)
 
-    @test PC.fix_parities!(even_model, even_manager) == 1
+    @test PC.fix_parities!(even_model, even_manager)
     @test even_model.vars[1] == PC.IntVar(-1.0, 2.0)
     parity_eval_equivalent(even_model0, even_model, 1, 2.0, 0.0)
 
@@ -265,7 +265,7 @@ end
     odd_manager = PC.PropagationManager([1])
     PC.fix_var!(odd_manager, 1, true)
 
-    @test PC.fix_parities!(odd_model, odd_manager) == 1
+    @test PC.fix_parities!(odd_model, odd_manager)
     @test odd_model.vars[1] == PC.IntVar(-1.0, 2.0)
     parity_eval_equivalent(odd_model0, odd_model, 1, 2.0, 1.0)
 end
@@ -282,7 +282,7 @@ end
     model0 = deepcopy(model)
     manager = PC.PropagationManager([1])
 
-    @test PC.fix_parities!(model, manager) == 0
+    @test !PC.fix_parities!(model, manager)
     @test model.vars == model0.vars
     @test model.cons[1].lhs == model0.cons[1].lhs
     @test model.cons[1].rhs == model0.cons[1].rhs
@@ -297,7 +297,7 @@ end
     manager = PC.PropagationManager([99])
     PC.fix_var!(manager, 99, true)
 
-    @test PC.fix_parities!(model, manager) == 0
+    @test !PC.fix_parities!(model, manager)
     @test model.vars == model0.vars
     @test isempty(model.cons)
 end
@@ -314,7 +314,7 @@ end
     manager = PC.PropagationManager([1])
     PC.fix_var!(manager, 1, true)
 
-    @test PC.fix_parities!(model, manager) == 1
+    @test PC.fix_parities!(model, manager)
     @test haskey(model.vars, 1)
     @test model.vars[1] == PC.IntVar(0.0, 0.0)
 end
@@ -334,7 +334,7 @@ end
     model = PC.QPModel(vars, [con], obj, :min)
     manager = parity_prepare_manager(PC.VarLit(1, false), PC.VarLit(2, false))
 
-    @test PC.fix_parity_patterns!(model, manager) == 2
+    @test PC.fix_parity_patterns!(model, manager)
     @test haskey(model.vars, 3)
     @test PC.is_binary(model.vars[3])
     @test model.vars[1] == PC.IntVar(0.0, 2.0)
@@ -380,7 +380,7 @@ end
     model0 = deepcopy(model)
     manager = parity_prepare_manager(PC.VarLit(1, false), PC.VarLit(2, true))
 
-    @test PC.fix_parity_patterns!(model, manager) == 2
+    @test PC.fix_parity_patterns!(model, manager)
     @test haskey(model.vars, 3)
     @test PC.is_binary(model.vars[3])
     @test model.vars[1] == PC.IntVar(0.0, 2.0)
@@ -428,7 +428,7 @@ end
     model0 = deepcopy(model)
     manager = PC.PropagationManager([1])
 
-    @test PC.fix_parity_patterns!(model, manager) == 0
+    @test !PC.fix_parity_patterns!(model, manager)
     @test model.vars == model0.vars
     @test isempty(model.cons)
 end
@@ -447,7 +447,7 @@ end
         model = PC.QPModel(copy(bounds), PC.Constraint[], deepcopy(objective), :min)
         manager = parity_prepare_manager(PC.VarLit(1, false), PC.VarLit(2, negated))
         postsolver = PC.ParityPostsolver(keys(bounds))
-        @test PC.fix_parity_patterns!(model, manager, postsolver) == 2
+        @test PC.fix_parity_patterns!(model, manager, postsolver)
         for b in 0:1, u in -3:3, v in -3:3
             point = [u, v, b]
             x = [2u + b, 2v + (negated ? 1 - b : b)]
@@ -477,7 +477,7 @@ end
     manager = parity_prepare_manager(PC.VarLit(1, false), PC.VarLit(2, false))
     before = PC._model_state_signature(model)
     postsolver = PC.ParityPostsolver(keys(model.vars))
-    @test PC.fix_parity_patterns!(model, manager, postsolver) == 0
+    @test !PC.fix_parity_patterns!(model, manager, postsolver)
     @test PC._model_state_signature(model) == before
     @test all(isempty(data.bits) for data in values(postsolver.var_data))
 end
@@ -492,14 +492,12 @@ end
     )
     model = PC.QPModel(vars, [con], parity_empty_objective(), :min)
 
-    stats = PC.parity_presolve!(model)
+    result = PC.parity_presolve!(model)
 
-    @test stats.changed
-    @test stats.domains_changed
-    @test isempty(stats.coefficient_changed_constraint_ids)
-    @test stats.fixed_parities == 0
-    @test stats.pattern_rewritten_vars == 0
-    @test !stats.infeasible
+    @test result.changed
+    @test result.domains_changed
+    @test isempty(result.coefficient_changed_constraint_ids)
+    @test !result.infeasible
     @test !model.infeasible
     @test !haskey(model.vars, 1)
     @test isempty(model.cons)
@@ -551,8 +549,7 @@ end
     changed_model = PC.QPModel(changed_vars, [changed_con], parity_empty_objective(), :min)
     propagator = PC.PropagationManager(PC.VarId[])
 
-    changed_stats = PC.parity_presolve_phase!(changed_model, propagator)
-    @test changed_stats == (changed = true, fixed_parities = 0, pattern_rewritten_vars = 2)
+    @test PC.parity_presolve_phase!(changed_model, propagator)
     @test !changed_model.infeasible
     @test haskey(changed_model.vars, 3)
     @test PC.is_binary(changed_model.vars[3])
@@ -571,8 +568,7 @@ end
     )
     stable_model = PC.QPModel(stable_vars, [stable_con], parity_empty_objective(), :min)
 
-    stable_stats = PC.parity_presolve_phase!(stable_model, propagator)
-    @test stable_stats == (changed = false, fixed_parities = 0, pattern_rewritten_vars = 0)
+    @test !PC.parity_presolve_phase!(stable_model, propagator)
     @test !stable_model.infeasible
     @test stable_model.vars == stable_vars
     @test length(stable_model.cons) == 1
@@ -625,9 +621,7 @@ end
 
     phase_model = parity_single_distance_model()
     propagator = PC.PropagationManager(PC.VarId[])
-    phase_stats = PC.parity_presolve_phase!(phase_model, propagator)
-
-    @test phase_stats == (changed = true, fixed_parities = 0, pattern_rewritten_vars = 4)
+    @test PC.parity_presolve_phase!(phase_model, propagator)
     @test !phase_model.infeasible
     @test phase_model.vars[1] == PC.IntVar(-10.0, 10.0)
     @test phase_model.vars[2] == PC.IntVar(-10.0, 10.0)
@@ -666,21 +660,19 @@ end
     model = PC.QPModel(vars, [con], parity_empty_objective(), :min)
     propagator = PC.PropagationManager(PC.VarId[])
 
-    phase1_stats = PC.parity_presolve_phase!(model, propagator)
-    @test phase1_stats == (changed = true, fixed_parities = 0, pattern_rewritten_vars = 2)
+    @test PC.parity_presolve_phase!(model, propagator)
     @test haskey(model.vars, 3)
     @test haskey(propagator.lit_to_pos, PC.VarLit(3, false))
     @test haskey(propagator.lit_to_pos, PC.VarLit(3, true))
     first_manager_size = length(propagator.pos_to_lit)
 
-    phase2_stats = PC.parity_presolve_phase!(model, propagator)
-    @test phase2_stats == (changed = false, fixed_parities = 0, pattern_rewritten_vars = 0)
+    @test !PC.parity_presolve_phase!(model, propagator)
     @test !model.infeasible
     @test length(propagator.pos_to_lit) == first_manager_size
     @test haskey(propagator.lit_to_pos, PC.VarLit(3, false))
 end
 
-@testset "parity_presolve_phase! reports fixed parity counts" begin
+@testset "parity_presolve_phase! tightens a variable with fixed parity" begin
     vars = Dict{PC.VarId, PC.IntVar}(1 => PC.IntVar(0.0, 4.0))
     con = PC.Constraint(
         parity_next_con_id(),
@@ -691,9 +683,7 @@ end
     model = PC.QPModel(vars, [con], parity_empty_objective(), :min)
     propagator = PC.PropagationManager(PC.VarId[])
 
-    stats = PC.parity_presolve_phase!(model, propagator)
-
-    @test stats == (changed = true, fixed_parities = 1, pattern_rewritten_vars = 0)
+    @test PC.parity_presolve_phase!(model, propagator)
     @test !model.infeasible
     @test model.vars[1] == PC.IntVar(0.0, 2.0)
 end
@@ -714,10 +704,10 @@ end
     )
     model = PC.QPModel(vars, [con1, con2], parity_empty_objective(), :min)
 
-    stats = PC.parity_presolve!(model)
+    result = PC.parity_presolve!(model)
 
     @test model.infeasible
-    @test stats.infeasible
+    @test result.infeasible
 end
 
 @testset "parity_presolve! checks constant XOR rows after fixing odd squares" begin
@@ -729,11 +719,10 @@ end
         con = PC.Constraint(parity_next_con_id(), expr, rhs, rhs)
         model = PC.QPModel(vars, [con], parity_empty_objective(), :min)
 
-        result = PC.parity_presolve!(model; collect_stats = true)
+        result = PC.parity_presolve!(model)
 
         @test model.infeasible == infeasible
-        @test result.parity_stats.infeasibility_detected == infeasible
-        @test result.parity_stats.infeasibility_source == (infeasible ? :propagation : :none)
+        @test result.infeasible == infeasible
     end
 end
 
@@ -746,14 +735,12 @@ end
     )
     model.infeasible = true
 
-    stats = PC.parity_presolve!(model)
+    result = PC.parity_presolve!(model)
 
-    @test !stats.changed
-    @test !stats.domains_changed
-    @test isempty(stats.coefficient_changed_constraint_ids)
-    @test stats.fixed_parities == 0
-    @test stats.pattern_rewritten_vars == 0
-    @test stats.infeasible
+    @test !result.changed
+    @test !result.domains_changed
+    @test isempty(result.coefficient_changed_constraint_ids)
+    @test result.infeasible
 end
 
 @testset "parity_presolve! is a no-op without parity structure" begin
@@ -799,9 +786,9 @@ end
     )
     model = PC.QPModel(vars, [con1, con2], parity_empty_objective(), :min)
 
-    stats = PC.parity_presolve!(model)
+    result = PC.parity_presolve!(model)
 
-    @test stats.changed
+    @test result.changed
     @test !model.infeasible
     @test length(model.cons) == 1
     @test model.cons[1].id == con1.id
@@ -829,9 +816,9 @@ end
     model = PC.QPModel(vars, [con1, con2], parity_empty_objective(), :min)
     propagator = PC.PropagationManager(PC.VarId[])
 
-    stats = PC.parity_presolve_phase!(model, propagator)
+    changed = PC.parity_presolve_phase!(model, propagator)
 
-    @test !stats.changed
+    @test !changed
     @test !model.infeasible
     @test length(model.cons) == 2
 end
@@ -892,7 +879,7 @@ end
     postsolver = PC.ParityPostsolver(keys(vars))
     PC.fix_var!(manager, 1, true)
 
-    @test PC.fix_parities!(model, manager, postsolver) == 1
+    @test PC.fix_parities!(model, manager, postsolver)
     PC.fix_vars!(model, postsolver)
 
     var_data = postsolver.var_data[1]
@@ -920,7 +907,7 @@ end
     manager = parity_prepare_manager(PC.VarLit(1, false), PC.VarLit(2, true))
     postsolver = PC.ParityPostsolver(keys(vars))
 
-    @test PC.fix_parity_patterns!(model, manager, postsolver) == 2
+    @test PC.fix_parity_patterns!(model, manager, postsolver)
     @test length(postsolver.var_data[1].bits) == 1
     @test postsolver.var_data[1].bits[1].kind == PC.BINVAR
     @test postsolver.var_data[1].bits[1].ref_var_id == 3
@@ -958,11 +945,11 @@ end
     manager = parity_prepare_manager(PC.VarLit(1, false), PC.VarLit(2, true))
     postsolver = PC.ParityPostsolver(keys(vars))
 
-    @test PC.fix_parity_patterns!(model, manager, postsolver) == 2
+    @test PC.fix_parity_patterns!(model, manager, postsolver)
 
     helper_manager = PC.PropagationManager([3])
     PC.fix_var!(helper_manager, 3, true)
-    @test PC.fix_parities!(model, helper_manager, postsolver) == 1
+    @test PC.fix_parities!(model, helper_manager, postsolver)
     PC.fix_vars!(model, postsolver)
 
     @test !haskey(model.vars, 3)
@@ -995,7 +982,7 @@ end
     while PC.pop_substitution!(manager) !== nothing
     end
 
-    @test PC.fix_parity_patterns!(model, manager, postsolver) == 2
+    @test PC.fix_parity_patterns!(model, manager, postsolver)
     @test haskey(model.vars, 5)
     @test haskey(postsolver.var_data, 5)
     @test postsolver.var_data[1].bits[1].kind == PC.BINVAR
@@ -1008,7 +995,7 @@ end
     while PC.pop_substitution!(manager) !== nothing
     end
 
-    @test PC.fix_parity_patterns!(model, manager, postsolver) == 2
+    @test PC.fix_parity_patterns!(model, manager, postsolver)
     @test haskey(model.vars, 6)
     PC.fix_vars!(model, postsolver)
 
@@ -1055,15 +1042,13 @@ end
     model = PC.QPModel(vars, PC.Constraint[], parity_empty_objective(), :min)
     postsolver = PC.ParityPostsolver(keys(vars))
 
-    stats = PC.parity_presolve!(model, postsolver)
+    result = PC.parity_presolve!(model, postsolver)
 
     @test !model.infeasible
-    @test stats.changed
-    @test stats.domains_changed
-    @test isempty(stats.coefficient_changed_constraint_ids)
-    @test stats.fixed_parities == 0
-    @test stats.pattern_rewritten_vars == 0
-    @test !stats.infeasible
+    @test result.changed
+    @test result.domains_changed
+    @test isempty(result.coefficient_changed_constraint_ids)
+    @test !result.infeasible
     @test model.vars[1] == PC.IntVar(0.0, 1.0)
     @test PC.postsolve(postsolver, Dict{PC.VarId, Float64}(1 => 0.0)) == Dict{PC.VarId, Float64}(1 => 3.0)
     @test PC.postsolve(postsolver, Dict{PC.VarId, Float64}(1 => 1.0)) == Dict{PC.VarId, Float64}(1 => 4.0)
@@ -1099,12 +1084,12 @@ end
     model = PC.QPModel(vars, [con], parity_empty_objective(), :min)
     propagator = PC.PropagationManager(PC.VarId[])
 
-    stats = PC.parity_presolve_phase!(model, propagator)
+    changed = PC.parity_presolve_phase!(model, propagator)
 
     @test !model.infeasible
     @test isempty(model.vars)
     @test isempty(model.cons)
-    @test stats.changed
+    @test changed
 end
 
 @testset "parity_presolve! accepts shifted binary inputs without pre-normalization" begin
@@ -1127,35 +1112,24 @@ end
 end
 
 @testset "parity_presolve! supports parity strategy presets" begin
-    mod2_model = parity_single_distance_model()
-    mod2_result = PC.parity_presolve!(
-        mod2_model;
-        collect_stats = true,
-        parity_strategy = :mod2_basic,
-    )
-    @test !mod2_model.infeasible
-    @test !mod2_result.infeasible
-    @test mod2_result.parity_stats.num_xorand_constraints_generated == 0
+    # The mod-4 row for 2xy = 2 forces both binary variables to one.
+    for strategy in (:mod2_basic, :mod4_basic, :full)
+        vars = Dict(i => PC.IntVar(0.0, 1.0) for i in 1:2)
+        expr = PC.QuadExpr(ParityQuadTerm[(2.0, 1, 2)], ParityLinTerm[])
+        con = PC.Constraint(parity_next_con_id(), expr, 2.0, 2.0)
+        model = PC.QPModel(vars, [con], parity_empty_objective(), :min)
+        postsolver = PC.ParityPostsolver(keys(vars))
 
-    mod4_basic_model = parity_single_distance_model()
-    mod4_basic_result = PC.parity_presolve!(
-        mod4_basic_model;
-        collect_stats = true,
-        parity_strategy = :mod4_basic,
-    )
-    @test !mod4_basic_model.infeasible
-    @test !mod4_basic_result.infeasible
-    @test mod4_basic_result.parity_stats.num_xorand_constraints_generated > 0
+        result = PC.parity_presolve!(model, postsolver; parity_strategy = strategy)
 
-    full_model = parity_single_distance_model()
-    full_result = PC.parity_presolve!(
-        full_model;
-        collect_stats = true,
-        parity_strategy = :full,
-    )
-    @test !full_model.infeasible
-    @test !full_result.infeasible
-    @test full_result.parity_stats.num_xorand_constraints_generated > 0
+        @test !result.infeasible
+        if strategy == :mod2_basic
+            @test length(model.vars) == 2
+        else
+            @test isempty(model.vars)
+            @test PC.postsolve(postsolver, Dict{Int, Float64}()) == Dict(1 => 1.0, 2 => 1.0)
+        end
+    end
 
     @test_throws ArgumentError PC.parity_presolve!(
         parity_single_distance_model();
