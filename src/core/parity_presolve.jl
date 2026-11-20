@@ -226,7 +226,7 @@ function _parity_builders(model::QPModel, parity_strategy)
     include_mod4 = _parity_includes_mod4(_normalize_parity_strategy(parity_strategy))
     builders = XorConstraintBuilder[]
     for con in model.cons
-        is_equality(con) || continue
+        is_equality(con) && is_integer(con) || continue
         mod2, mod4 = get_builders(model, con; include_mod4)
         push!(builders, mod2)
         isnothing(mod4) || push!(builders, mod4)
@@ -349,6 +349,7 @@ end
 
 function _reduce_parity_blocks!(blocks::ParityBlocks, manager::PropagationManager, strategy)
     propagate!(blocks, manager; parity_strategy = strategy)
+    manager.infeasible && return false
     while !any(model -> model.infeasible, blocks.models) && any(has_unpivoted_con, blocks.models)
         pure_xor = any(has_unpivoted_xor_con, blocks.models)
         for model in blocks.models
@@ -361,6 +362,7 @@ function _reduce_parity_blocks!(blocks::ParityBlocks, manager::PropagationManage
         end
 
         propagate!(blocks, manager; parity_strategy = strategy)
+        manager.infeasible && return false
         if pure_xor
             for model in blocks.models
                 model.infeasible && return false
@@ -378,8 +380,9 @@ end
 
 Execute one parity presolve phase on a quadratic model.
 
-Normalize `model` without aggregating parallel constraints and build a parity
-model for each independent set of rows. Eliminate rows within each block and
+Normalize `model` without aggregating parallel constraints, seed the implication
+graph from binary row bounds, and build a parity model for each independent set
+of XOR rows. Eliminate rows within each block and
 propagate deductions through the shared manager. Apply variable fixes and
 pattern rewrites to the QP, then normalize again without aggregation.
 
@@ -399,8 +402,7 @@ pattern rewrites to the QP, then normalize again without aggregation.
 - May set `model.infeasible = true`.
 
 # Notes
-- The phase finalizes the propagator before returning from non-infeasible early
-  exits.
+- The phase retires consumed low bits before normalizing the rewritten variables.
 - The caller is responsible for repeating phases until a fixed point is reached.
 
 # See also
@@ -416,37 +418,28 @@ function parity_presolve_phase!(
     parity_strategy = _normalize_parity_strategy(parity_strategy)
     model.infeasible && return false
 
-    before_normalization = _model_state_signature(model)
-    normalize!(model, postsolver; aggregate_parallel = false)
-    normalization_changed = before_normalization != _model_state_signature(model)
+    normalization_changed = _normalize_model!(model, postsolver; propagator, aggregate_parallel = false)
     model.infeasible && return normalization_changed
 
-    if isempty(model.vars)
-        finalize_phase!(propagator)
+    _seed_binary_implications!(propagator, model)
+    if propagator.infeasible
+        model.infeasible = true
         return normalization_changed
     end
-
     builders = _parity_builders(model, parity_strategy)
     blocks = _build_parity_blocks!(builders, propagator)
     if isnothing(blocks) || !_reduce_parity_blocks!(blocks, propagator, parity_strategy)
         model.infeasible = true
         return normalization_changed
     end
-    if isempty(blocks.models)
-        finalize_phase!(propagator)
-        return normalization_changed
-    end
-
     parities_fixed = fix_parities!(model, propagator, postsolver)
     patterns_rewritten = fix_parity_patterns!(model, propagator, postsolver)
+    # Retire the consumed low bits before normalization can fix or shift quotients
+    # that reuse their variable IDs.
+    finalize_phase!(propagator)
 
-    before_post_normalization = _model_state_signature(model)
-    normalize!(model, postsolver; aggregate_parallel = false)
-    changed = normalization_changed || parities_fixed || patterns_rewritten ||
-        before_post_normalization != _model_state_signature(model)
-
-    model.infeasible || finalize_phase!(propagator)
-    return changed
+    post_changed = _normalize_model!(model, postsolver; propagator, aggregate_parallel = false)
+    return normalization_changed || parities_fixed || patterns_rewritten || post_changed
 end
 
 """
@@ -519,7 +512,7 @@ function parity_presolve!(
     before_state = _model_state_signature(model)
     before_domains = _var_domain_snapshot(model)
     before_signatures = _constraint_coefficient_signatures(model)
-    normalize!(model, postsolver)
+    normalize!(model, postsolver; propagator)
     changed = before_state != _model_state_signature(model)
 
     phases_run = 0

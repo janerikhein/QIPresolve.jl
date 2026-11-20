@@ -211,7 +211,7 @@ function _tighten_singleton_constraint!(model::QPModel, con::Constraint)
     return true
 end
 
-function _fix_vars_and_singletons!(model::QPModel, postsolver::Union{Nothing, ParityPostsolver})
+function _fix_vars_and_singletons!(model::QPModel, postsolver::Union{Nothing, ParityPostsolver}, propagator = nothing)
     model.infeasible && return false
 
     changed = false
@@ -229,6 +229,11 @@ function _fix_vars_and_singletons!(model::QPModel, postsolver::Union{Nothing, Pa
     for var_id in fixed_var_ids
         haskey(model.vars, var_id) || continue
         var = model.vars[var_id]
+        if propagator !== nothing && haskey(propagator.lit_to_pos, VarLit(var_id, false))
+            # The removed value can still imply a parity on a surviving variable.
+            lit = _lit_for_value(var_id, isodd(var.lb))
+            add_implication!(propagator, negated(lit), lit)
+        end
         postsolver !== nothing && register_fixed_var!(postsolver, var_id, var.lb)
         var_bound_shift!(model, var_id, var.lb)
         @assert model.vars[var_id].lb == model.vars[var_id].ub == 0.0
@@ -244,7 +249,9 @@ function _fix_vars_and_singletons!(model::QPModel, postsolver::Union{Nothing, Pa
 
     for i in reverse(eachindex(model.cons))
         con = model.cons[i]
+        previous = (con.lhs, con.rhs, con.qe.nvars)
         normalize!(con)
+        changed |= !isequal(previous, (con.lhs, con.rhs, con.qe.nvars))
 
         if is_empty(con.qe)
             if !(con.lhs <= 0.0 <= con.rhs)
@@ -268,7 +275,7 @@ function _fix_vars_and_singletons!(model::QPModel, postsolver::Union{Nothing, Pa
     return changed
 end
 
-function _normalize_shifted_binaries!(model::QPModel, postsolver::Union{Nothing, ParityPostsolver})
+function _normalize_shifted_binaries!(model::QPModel, postsolver::Union{Nothing, ParityPostsolver}, propagator = nothing)
     model.infeasible && return false
 
     changed = false
@@ -284,6 +291,7 @@ function _normalize_shifted_binaries!(model::QPModel, postsolver::Union{Nothing,
         var = model.vars[var_id]
         _is_shifted_binary(var) || continue
 
+        propagator !== nothing && isodd(var.lb) && _flip_parity_literals!(propagator, var_id)
         postsolver !== nothing && add_reconstruction_offset!(postsolver, var_id, var.lb)
         affine_transform!(model, var_id, 1.0, var.lb)
         set_var_bounds!(model, var_id, 0.0, 1.0)
@@ -495,8 +503,17 @@ diagonal folding, idempotent quadratic-form symmetrization, GCD scaling, and
 parallel-constraint aggregation.
 """
 function normalize!(
+        model::QPModel, postsolver::Union{Nothing, ParityPostsolver}; kwargs...,
+    )
+    _normalize_model!(model, postsolver; kwargs...)
+    return model
+end
+
+# Internal callers that schedule another reduction pass need the change flag.
+function _normalize_model!(
         model::QPModel,
         postsolver::Union{Nothing, ParityPostsolver};
+        propagator::Union{Nothing, PropagationManager} = nothing,
         remove_fixed_vars::Bool = true,
         standardize_binaries::Bool = true,
         fold_binary_diagonal::Bool = true,
@@ -504,45 +521,47 @@ function normalize!(
         scale_gcd::Bool = true,
         aggregate_parallel::Bool = true,
     )
-    model.infeasible && return model
+    model.infeasible && return false
 
+    any_changed = false
     while true
         changed = false
 
         if remove_fixed_vars
-            changed = _fix_vars_and_singletons!(model, postsolver) || changed
-            model.infeasible && return model
+            changed = _fix_vars_and_singletons!(model, postsolver, propagator) || changed
+            model.infeasible && return true
         end
 
         if standardize_binaries
-            changed = _normalize_shifted_binaries!(model, postsolver) || changed
-            model.infeasible && return model
+            changed = _normalize_shifted_binaries!(model, postsolver, propagator) || changed
+            model.infeasible && return true
         end
 
         if fold_binary_diagonal
             changed = _fold_binary_diagonal!(model) || changed
-            model.infeasible && return model
+            model.infeasible && return true
         end
 
         if symmetrize_quadratic
             changed = (_symmetrize_quadratic_form!(model) > 0) || changed
-            model.infeasible && return model
+            model.infeasible && return true
         end
 
         if scale_gcd
             changed = (scale_constraints_gcd!(model) > 0) || changed
-            model.infeasible && return model
+            model.infeasible && return true
         end
 
         if aggregate_parallel
             changed = (aggregate_parallel_constraints!(model) > 0) || changed
-            model.infeasible && return model
+            model.infeasible && return true
         end
 
         changed || break
+        any_changed = true
     end
 
-    return model
+    return any_changed
 end
 
 fix_vars!(model::QPModel) = fix_vars!(model, nothing)

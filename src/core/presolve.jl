@@ -19,13 +19,13 @@ function _residue_presolve_pass!(
         candidate_con_ids::Union{Nothing, Set{Int}},
         postsolver::Union{Nothing, ParityPostsolver} = nothing;
         treewidth_threshold::Integer,
+        propagator::Union{Nothing, PropagationManager} = nothing,
     )
     model.infeasible && return (changed = false, tightened_to_equality = false, infeasible = true)
-    normalize!(model, postsolver)
+    changed = _normalize_model!(model, postsolver; propagator)
     model.infeasible && return (changed = true, tightened_to_equality = false, infeasible = true)
-    isempty(moduli) && return (changed = false, tightened_to_equality = false, infeasible = false)
+    isempty(moduli) && return (changed = changed, tightened_to_equality = false, infeasible = false)
 
-    changed = false
     tightened_to_equality = false
     for con in model.cons
         candidate_con_ids === nothing || con.id in candidate_con_ids || continue
@@ -45,10 +45,10 @@ end
 
 Run the combined parity and residue presolve pipeline.
 
-The pass mutates `model` in place, normalizes and symmetrizes constraints,
-alternates parity and residue reductions using the improvement gates expected by
-the combined presolver, and returns the mutated model together with postsolve
-reconstruction data. Keyword defaults are defined in `QIPresolve.PresolveConfig`.
+The pass mutates `model` in place, normalizes and symmetrizes constraints, and
+returns the reduced model with postsolve reconstruction data. Parity revisits
+binary implications and XOR rows after a residue pass changes the model. Keyword
+defaults are defined in `QIPresolve.PresolveConfig`.
 
 Set `enable_parity=false` or `enable_residue=false` to skip that reduction
 entirely, including its strategy validation. Shared
@@ -93,9 +93,10 @@ function presolve!(
         nothing,
         postsolver;
         treewidth_threshold = treewidth_threshold,
+        propagator = remaining_phases > 0 ? propagator : nothing,
     )
 
-    while remaining_phases > 0 && !model.infeasible && residue_result.tightened_to_equality
+    while remaining_phases > 0 && !model.infeasible && residue_result.changed
         parity_result = parity_presolve!(
             model,
             propagator,
@@ -113,6 +114,7 @@ function presolve!(
             parity_result.coefficient_changed_constraint_ids,
             postsolver;
             treewidth_threshold = treewidth_threshold,
+            propagator = remaining_phases > 0 ? propagator : nothing,
         )
     end
 

@@ -534,7 +534,33 @@ function propagate!(
     parity_strategy = DEFAULT_PRESOLVE_PARITY_STRATEGY,
 )
     propagate!(ParityBlocks([model]), manager; parity_strategy)
+    model.infeasible |= manager.infeasible
     return model
+end
+
+# Project each signed equivalence class onto the columns present in this block.
+# The global representative can belong solely to an inequality. Bind both signs
+# to one local column so substitutions never need a column from another block.
+function _apply_block_relations!(changed, model, manager)
+    local_reps = Dict{Int, VarLit}()
+    for vid in model.pos_to_var_id
+        value = fixed_value(manager, vid)
+        if value !== nothing
+            _fix_var_rows!(changed, model, vid, value)
+            continue
+        end
+        pos = repr!(manager, manager.lit_to_pos[VarLit(vid, false)])
+        target = manager.pos_to_lit[pos]
+        if !haskey(model.var_id_to_pos, target.vid)
+            if !haskey(local_reps, pos)
+                neg = repr!(manager, manager.lit_to_pos[VarLit(vid, true)])
+                local_reps[pos] = VarLit(vid, false)
+                local_reps[neg] = VarLit(vid, true)
+            end
+            target = local_reps[pos]
+        end
+        vid == target.vid || _substitute_var_rows!(changed, model, vid, target.vid, target.neg)
+    end
 end
 
 """Register row deductions across all blocks before draining the shared manager's queues."""
@@ -545,8 +571,8 @@ function propagate!(
 )
     parity_strategy = _normalize_parity_strategy(parity_strategy)
     models = blocks.models
-    while !any(model -> model.infeasible, models) &&
-            (any(_has_constraints_requiring_propagation, models) ||
+    while !manager.infeasible && !any(model -> model.infeasible, models) &&
+            (manager.graph_dirty || any(_has_constraints_requiring_propagation, models) ||
              !isempty(manager.pending_fixings) || !isempty(manager.pending_substitutions))
         empty!(manager.seen_fixings)
         empty!(manager.seen_substitutions)
@@ -555,6 +581,7 @@ function propagate!(
         end
 
         update!(manager)
+        manager.infeasible && break
         changed = [falses(length(model.cons)) for model in models]
 
         while true
@@ -565,15 +592,12 @@ function propagate!(
             block == 0 || _fix_var_rows!(changed[block], models[block], vid, val)
         end
 
-        while true
-            substitution = pop_substitution!(manager)
-            substitution === nothing && break
-            vid, substid, neg = substitution
-            block = get(blocks.owner, vid, 0)
-            block == 0 || _substitute_var_rows!(changed[block], models[block], vid, substid, neg)
-        end
-
+        empty!(manager.pending_substitutions)
+        has_relations = manager.nreps < length(manager.parent_pos) || any(!=(UNDEF), manager.lit_labels)
         for (model, changed_rows) in zip(models, changed)
+            if has_relations
+                _apply_block_relations!(changed_rows, model, manager)
+            end
             for i in eachindex(changed_rows)
                 changed_rows[i] && _revalidate_pivot!(model, i)
             end

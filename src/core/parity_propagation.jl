@@ -63,7 +63,9 @@ mutable struct PropagationManager
     seen_substitutions::Dict{VarId, Bool}
 
     # Implication graph structure over SCC representant positions
-    graph::DiGraph 
+    graph::DiGraph
+    graph_dirty::Bool
+    infeasible::Bool
 end
 
 """
@@ -126,11 +128,13 @@ function PropagationManager(var_ids::Vector{VarId})
         seen_fixings,
         seen_substitutions,
         graph,
+        false,
+        false,
     )
 end
 
 """
-    ensure_literals!(manager::PropagationManager, var_ids::Vector{VarId}) -> PropagationManager
+    ensure_literals!(manager::PropagationManager, var_ids) -> PropagationManager
 
 Ensure that every variable id in `var_ids` has positive and negated literals
 registered in `manager`.
@@ -138,7 +142,7 @@ registered in `manager`.
 Missing variables are appended as isolated singleton SCCs with `UNDEF` labels.
 Existing literals are left unchanged.
 """
-function ensure_literals!(manager::PropagationManager, var_ids::Vector{VarId})
+function ensure_literals!(manager::PropagationManager, var_ids)
     for vid in var_ids
         haskey(manager.lit_to_pos, VarLit(vid, false)) && continue
 
@@ -169,6 +173,21 @@ function ensure_literals!(manager::PropagationManager, var_ids::Vector{VarId})
     end
 
     return manager
+end
+
+# x_old = x_new + an odd offset. The SCCs retain their meaning while the
+# positive and negative names of this variable exchange positions.
+function _flip_parity_literals!(manager::PropagationManager, vid::VarId)
+    pos, neg = VarLit(vid, false), VarLit(vid, true)
+    haskey(manager.lit_to_pos, pos) || return
+    p, n = manager.lit_to_pos[pos], manager.lit_to_pos[neg]
+    manager.lit_to_pos[pos], manager.lit_to_pos[neg] = n, p
+    manager.pos_to_lit[p], manager.pos_to_lit[n] = neg, pos
+    for _ in 1:length(manager.pending_fixings)
+        id, value = popfirst!(manager.pending_fixings)
+        push!(manager.pending_fixings, (id, xor(value, id == vid)))
+    end
+    empty!(manager.seen_fixings)
 end
 
 
@@ -270,8 +289,8 @@ end
 Assign `label` to SCC position `scc_pos` if it is not already set to that
 value, then check whether the affected variable has become fixed.
 
-Returns `true` if the label changed and `false` if the existing label already
-matched `label`.
+Returns `true` if the label changed. Opposite truth labels mark the manager
+infeasible and preserve the original label.
 """
 function set_lit_label!(
     manager::PropagationManager,
@@ -280,6 +299,10 @@ function set_lit_label!(
 )
     cur_label = manager.lit_labels[scc_pos]
     cur_label == label && return false
+    if cur_label != UNDEF && label != UNDEF
+        manager.infeasible = true
+        return false
+    end
     manager.lit_labels[scc_pos] = label
     maybe_enqueue_fixing!(manager, scc_pos)
     return true
@@ -330,7 +353,9 @@ function add_edge!(
 
     scc_pos1 = manager.rep_pos_to_scc_pos[rep1]
     scc_pos2 = manager.rep_pos_to_scc_pos[rep2]
-    return Graphs.add_edge!(manager.graph, scc_pos1, scc_pos2)
+    added = Graphs.add_edge!(manager.graph, scc_pos1, scc_pos2)
+    manager.graph_dirty |= added
+    return added
 end
 
 
@@ -340,15 +365,15 @@ end
 Insert the implication `lit1 => lit2` into the propagation graph.
 
 To maintain logical equivalence in the implication graph, this also inserts the
-contrapositive implication `¬lit2 => ¬lit1`.
+contrapositive implication `¬lit2 => ¬lit1`. Returns whether either edge was new.
 """
 function add_implication!(
     manager::PropagationManager,
     lit1::VarLit,
     lit2::VarLit,
 )
-    add_edge!(manager, lit1, lit2)
-    add_edge!(manager, negated(lit2), negated(lit1))
+    added = add_edge!(manager, lit1, lit2)
+    return add_edge!(manager, negated(lit2), negated(lit1)) || added
 end
 
 
@@ -436,8 +461,8 @@ function update_sccs!(manager::PropagationManager)
         for v in comp_scc_pos
             cur_label = old_lit_labels[v]
             cur_label == UNDEF && continue
+            manager.infeasible |= label != UNDEF && label != cur_label
             label = cur_label
-            break
         end
         new_lit_labels[i] = label
     end
@@ -458,6 +483,13 @@ function update_sccs!(manager::PropagationManager)
     manager.scc_pos_to_rep_pos = new_idx_to_rep
     manager.lit_labels = new_lit_labels
     manager.graph = new_graph
+    for rep in new_idx_to_rep
+        opposite = negated(manager.pos_to_lit[rep])
+        if repr!(manager, manager.lit_to_pos[opposite]) == rep
+            manager.infeasible = true
+            break
+        end
+    end
     return manager
 end
 
@@ -482,7 +514,7 @@ function propagate_labels!(
     @inbounds for v in top_order
         lit_labels[v] == TRUE || continue
         for w in outneighbors(graph, v)
-            lit_labels[w] == UNDEF && set_lit_label!(manager, w, TRUE)
+            set_lit_label!(manager, w, TRUE)
         end
     end
 
@@ -491,7 +523,7 @@ function propagate_labels!(
         w = top_order[i]
         lit_labels[w] == FALSE || continue
         for v in inneighbors(graph, w)
-            lit_labels[v] == UNDEF && set_lit_label!(manager, v, FALSE)
+            set_lit_label!(manager, v, FALSE)
         end
     end
 
@@ -769,6 +801,8 @@ implication DAG.
 """
 function update!(manager::PropagationManager)
     update_sccs!(manager)
+    manager.graph_dirty = false
+    manager.infeasible && return manager
     top_order = topological_sort(manager.graph)
     label_reachables!(manager, top_order)
     propagate_labels!(manager, top_order)

@@ -137,8 +137,9 @@ end
     @test PC.pop_fixing!(manager) == (1, true)
     @test PC.pop_fixing!(manager) === nothing
 
-    @test PC.set_lit_label!(manager, 1, PC.FALSE)
-    @test manager.lit_labels[1] == PC.FALSE
+    @test !PC.set_lit_label!(manager, 1, PC.FALSE)
+    @test manager.infeasible
+    @test manager.lit_labels[1] == PC.TRUE
 
     manager2 = PC.PropagationManager([2])
     manager2.lit_labels[1] = PC.FALSE

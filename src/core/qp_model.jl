@@ -267,6 +267,7 @@ function fix_parity_patterns!(
     propagator::ParityPropagator,
     postsolver::Union{Nothing, ParityPostsolver},
 )
+    propagator.nreps == length(propagator.parent_pos) && return false
     candidate_vids = VarId[]
 
     for scc_pos in eachindex(propagator.scc_pos_to_rep_pos)

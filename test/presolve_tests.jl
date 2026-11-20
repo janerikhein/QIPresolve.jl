@@ -146,8 +146,8 @@ end
 @testset "presolve! passes parity strategy option" begin
     function conjunction_true_model()
         vars = Dict{PC.VarId, PC.IntVar}(
-            1 => PC.IntVar(0.0, 1.0),
-            2 => PC.IntVar(0.0, 1.0),
+            1 => PC.IntVar(0.0, 2.0),
+            2 => PC.IntVar(0.0, 2.0),
         )
         con = PC.Constraint(
             presolve_next_con_id(),
@@ -190,14 +190,14 @@ end
 
 @testset "presolve! runs the first residue pass without parity changes" begin
     vars = Dict{PC.VarId, PC.IntVar}(
-        1 => PC.IntVar(0.0, 1.0),
-        2 => PC.IntVar(0.0, 1.0),
+        1 => PC.IntVar(0.0, 2.0),
+        2 => PC.IntVar(0.0, 2.0),
     )
     con = PC.Constraint(
         presolve_next_con_id(),
-        PC.QuadExpr(PresolveQuadTerm[], PresolveLinTerm[(2.0, 1), (3.0, 2)]),
+        PC.QuadExpr(PresolveQuadTerm[(2.0, 1, 2)], PresolveLinTerm[]),
         1.0,
-        4.0,
+        5.0,
     )
     model = PC.QPModel(vars, [con], presolve_empty_objective(), :min)
 
@@ -206,7 +206,7 @@ end
     @test result.model === model
     @test !model.infeasible
     @test model.cons[1].lhs == 2.0
-    @test model.cons[1].rhs == 3.0
+    @test model.cons[1].rhs == 4.0
     @test model.vars == vars
 end
 
@@ -249,7 +249,7 @@ end
 
 @testset "presolve! shares the parity phase limit across residue passes" begin
     for budget in 0:2
-        vars = Dict(i => PC.IntVar(0.0, 1.0) for i in 1:2)
+        vars = Dict(i => PC.IntVar(0.0, 2.0) for i in 1:2)
         expr = PC.QuadExpr(PresolveQuadTerm[(2.0, 1, 2)], PresolveLinTerm[])
         con = PC.Constraint(presolve_next_con_id(), expr, 1.0, 2.0)
         model = PC.QPModel(vars, [con], presolve_empty_objective(), :min)

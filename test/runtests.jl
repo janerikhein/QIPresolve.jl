@@ -18,6 +18,7 @@ using Test
     include("presolve_diophantine_experiment_script_tests.jl")
     include("presolve_lattice_experiment_script_tests.jl")
     include("propagation_tests.jl")
+    include("binary_implication_tests.jl")
     include("xor_constraint_tests.jl")
     include("xor_model_tests.jl")
     include("presolve_parity_tests.jl")

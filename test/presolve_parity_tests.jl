@@ -1209,12 +1209,8 @@ end
         result = PC.parity_presolve!(model, postsolver; parity_strategy = strategy)
 
         @test !result.infeasible
-        if strategy == :mod2_basic
-            @test length(model.vars) == 2
-        else
-            @test isempty(model.vars)
-            @test PC.postsolve(postsolver, Dict{Int, Float64}()) == Dict(1 => 1.0, 2 => 1.0)
-        end
+        @test isempty(model.vars)
+        @test PC.postsolve(postsolver, Dict{Int, Float64}()) == Dict(1 => 1.0, 2 => 1.0)
     end
 
     @test_throws ArgumentError PC.parity_presolve!(
